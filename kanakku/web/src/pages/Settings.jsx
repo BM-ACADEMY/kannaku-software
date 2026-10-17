@@ -538,7 +538,7 @@ function Integrations() {
   const { data, error, reload } = useAsync(() => api('/integrations'), []);
   if (error) return <Err error={error} />;
   if (!data) return <Loader />;
-  const hookUrl = `${(data.app_url || window.location.origin).replace(/\/+$/, '')}/api/webhooks/razorpay`;
+  const hookUrl = `${(data.api_url || data.app_url || window.location.origin).replace(/\/+$/, '')}/api/webhooks/razorpay`;
   const copy = async (t) => { try { await navigator.clipboard.writeText(t); notify('Copied'); } catch { notify('Copy failed — select and copy by hand'); } };
   const local = /localhost|127\.0\.0\.1/.test(hookUrl);
   const extras = {

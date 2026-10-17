@@ -105,7 +105,7 @@ router.put('/accounts/:id', requireRole('admin'), ah(async (req, res) => {
 router.get('/integrations', requireRole('admin'), ah(async (_req, res) => {
   const last = (await query(`SELECT entry_date, amount, ref, created_at FROM entries WHERE source='razorpay' AND deleted_at IS NULL
     ORDER BY created_at DESC LIMIT 1`)).rows[0] || null;
-  res.json({ ...(await integrations.publicView()), app_url: process.env.APP_URL || '', razorpay_last: last, razorpay_sync: await razorpay.syncState() });
+  res.json({ ...(await integrations.publicView()), app_url: process.env.APP_URL || '', api_url: process.env.API_URL || '', razorpay_last: last, razorpay_sync: await razorpay.syncState() });
 }));
 router.post('/integrations/razorpay/sync', requireRole('admin'), ah(async (_req, res) => {
   try {

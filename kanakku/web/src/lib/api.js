@@ -1,4 +1,6 @@
 const TOKEN_KEY = 'kanakku_token';
+// Empty = same domain (dev proxy or one-domain deploy). Set VITE_API_URL=https://kanakku-api.afraventures.in when the API has its own subdomain.
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
@@ -13,7 +15,7 @@ export async function api(path, { method = 'GET', body } = {}) {
   setBusy(1);
   let res, data;
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(`${API_BASE}/api${path}`, {
       method,
       headers: { 'content-type': 'application/json', ...(getToken() ? { authorization: `Bearer ${getToken()}` } : {}) },
       body: body ? JSON.stringify(body) : undefined,
