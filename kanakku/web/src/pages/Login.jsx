@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { api, setToken } from '../lib/api.js';
-import { Err, Field } from '../components/ui.jsx';
+import { Err, Field, Icon } from '../components/ui.jsx';
 
 export default function Login({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showPw, setShowPw] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -29,7 +30,12 @@ export default function Login({ onLogin }) {
           </div>
           <Err error={error} />
           <Field label="Email"><input className="input" type="email" placeholder="you@afraventures.in" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required /></Field>
-          <Field label="Password"><input className="input" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
+          <Field label="Password">
+            <div className="pw">
+              <input className="input" type={showPw ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <button type="button" className={`pw-eye${showPw ? ' on' : ''}`} aria-label={showPw ? 'Hide password' : 'Show password'} title={showPw ? 'Hide password' : 'Show password'} onClick={() => setShowPw(!showPw)}>{showPw ? Icon.eyeOff : Icon.eye}</button>
+            </div>
+          </Field>
           <button className="btn primary block" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
         <div className="login-foot">Afra Ventures Private Limited · Puducherry</div>
