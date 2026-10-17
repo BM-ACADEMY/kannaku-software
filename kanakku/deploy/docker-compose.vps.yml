@@ -1,0 +1,19 @@
+# Kanakku on a server that already runs PostgreSQL + n8n (the LeadOS VPS).
+# Only the app container — it uses the existing database and n8n.
+#   From the project root:  docker compose -f deploy/docker-compose.vps.yml up -d --build
+#   Logs:                   docker logs -f kanakku
+# server/.env must point DATABASE_URL at host.docker.internal:5432 (the host's PostgreSQL).
+services:
+  kanakku:
+    build: ..
+    container_name: kanakku
+    restart: unless-stopped
+    env_file: ../server/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Only nginx on this server can reach it. Change KANAKKU_PORT if 4100 is taken.
+    ports:
+      - "127.0.0.1:${KANAKKU_PORT:-4100}:4000"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
