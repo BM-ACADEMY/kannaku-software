@@ -1,0 +1,64 @@
+# Kanakku — Afra Ventures. Run: docker compose up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kanakku
+      POSTGRES_USER: kanakku
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kanakku"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: server/.env
+    environment:
+      DATABASE_URL: postgres://kanakku:${DB_PASSWORD}@db:5432/kanakku
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-4000}:4000"
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      N8N_HOST: n8n.afraventures.in
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://n8n.afraventures.in/
+      GENERIC_TIMEZONE: Asia/Kolkata
+      TZ: Asia/Kolkata
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-true}   # false only for a local install without HTTPS
+      KANAKKU_URL: http://app:4000
+      KANAKKU_INTERNAL_KEY: ${INTERNAL_API_KEY}
+      WA_PHONE_NUMBER_ID: ${WA_PHONE_NUMBER_ID}
+      WA_TOKEN: ${WA_TOKEN}
+    volumes:
+      - n8ndata:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+    ports:
+      - "127.0.0.1:5678:5678"
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c", "while true; do pg_dump -h db -U kanakku kanakku | gzip > /backups/kanakku_$$(date +%F).sql.gz; find /backups -name '*.sql.gz' -mtime +30 -delete; sleep 86400; done"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  n8ndata:
