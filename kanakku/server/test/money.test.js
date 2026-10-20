@@ -99,3 +99,17 @@ test('Cash forecast finds the first day money runs out', () => {
   assert.deepEqual(p.low, { date: '2026-10-21', balance: -5500 });
   assert.equal(p.end_balance, 14500);
 });
+
+test('Calendar feed: valid iCalendar, escaped text, lines folded at 75 bytes', () => {
+  const { buildIcs } = require('../src/lib/ics');
+  const ics = buildIcs([{ key: 'doc-1', date: '2026-10-25', direction: 'out', amount: 15500, title: 'Pay · Owner, Kosapalayam; rent', brand: 'Shared', ref: 'line1\nline2', kind: 'Recurring', days_left: 5 },
+    { key: 'doc-2', date: '2026-10-18', direction: 'in', amount: 70800, title: 'Collect · ' + 'A'.repeat(120), kind: 'Invoice', days_left: -2 }]);
+  assert.match(ics, /^BEGIN:VCALENDAR\r\n/); assert.match(ics, /END:VCALENDAR\r\n$/);
+  assert.equal((ics.match(/BEGIN:VEVENT/g) || []).length, 2);
+  assert.match(ics, /DTSTART;VALUE=DATE:20261025\r\nDTEND;VALUE=DATE:20261026/);
+  const flat = ics.replace(/\r\n /g, ''); // calendar apps join folded lines back together
+  assert.ok(flat.includes('Owner\\, Kosapalayam\\; rent'), 'commas and semicolons escaped');
+  assert.ok(flat.includes('line1\\nline2'), 'new lines escaped');
+  assert.ok(flat.includes('(overdue)'), 'overdue marked');
+  for (const l of ics.split('\r\n')) assert.ok(Buffer.byteLength(l) <= 75, `line too long: ${l.slice(0, 30)}`);
+});

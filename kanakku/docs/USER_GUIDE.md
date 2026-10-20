@@ -50,6 +50,14 @@ Razorpay payments with the invoice number in the notes are recorded automaticall
 ## Autopilot
 Runs by itself every day: makes recurring entries, sends payment reminders, the Monday brief, investor statements, closes last month, and warns if cash may run short or a brand goes over budget. **What it did** shows every run. Set up rent and salaries under **Recurring entries**.
 
+**Loans and rent — reminders and Google Calendar**
+- Rent, EB, salaries: add each one once under **Recurring entries** (day of month, amount, brand or split). 
+- Loan EMI: same, with category **Loan repaid** (it shows as *EMI*). The money you borrowed is booked once as **Loan received**. Neither is profit or loss.
+- Every morning at 9:30 Autopilot sends admins one WhatsApp/email: what to pay **today, tomorrow, in 3 days**, plus anything overdue (bills, EMIs, rent, refunds, money you owe).
+- **Coming up & calendar** tab shows everything due in the next 7–90 days.
+- **Google Calendar:** turn on *Calendar link* → Copy → open calendar.google.com on a computer → left side *Other calendars* **+** → **From URL** → paste → Add calendar. Payments show as all-day events (🔴 pay, 🟢 collect). Then in that calendar's settings set *Event notifications* (e.g. 1 day before, 9 am) to get phone alerts. Google refreshes the calendar itself every few hours.
+- The link is private. If it leaks, press **New link** — the old one stops working.
+
 ## P&L
 Pick This month / Last month / This FY or any dates. Profit is shown **without GST** (that's the government's money). Other tabs: **Budget** (targets per brand), **Cash forecast** (will we run short?), **GST returns** (GSTR-1 + 3B — **Download for CA** every month), **TDS**.
 

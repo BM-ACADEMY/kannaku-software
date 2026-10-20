@@ -171,6 +171,8 @@ Optional. Set `XAI_API_KEY`. Used for (a) parsing typed notes into a draft entry
 | `GET/POST /attachments/:entity/:id` · `GET/DELETE /attachments/file/:id` | admin, accounts (delete: admin) | bill photos / PDFs (base64 JSON upload, 8 MB) |
 | `GET/PUT /autopilot` · `POST /autopilot/run/:job` | admin (read: accounts) | autopilot settings, log, run now |
 | `POST /auth/login/otp` · `/forgot` · `/reset` · `/2fa/setup` · `/2fa/enable` · `/2fa/disable` · `/logout-all` | public / logged in | 2-step login, password reset, log out everywhere |
+| `GET /calendar/feed/:token.ics` | private token, no login | iCalendar feed of payments due (Google Calendar "From URL") |
+| `GET/POST /calendar/settings` · `GET /calendar/upcoming?days` | admin (upcoming: accounts too) | calendar link on/off/new, what's due |
 | `GET /portal/statement?month` | investor | own statement only |
 | `POST /webhooks/razorpay` | signature | Razorpay |
 | `/internal/*` | x-internal-key | n8n only |
@@ -178,6 +180,9 @@ Optional. Set `XAI_API_KEY`. Used for (a) parsing typed notes into a draft entry
 
 ### Bank statements
 `lib/bankcsv.js` finds the transactions table in any Indian net-banking CSV (header lines above it, DD/MM/YYYY or 16-Oct-2026 dates, Withdrawal/Deposit or Amount + Dr/Cr columns). Each line gets a hash (account, date, text, amounts, running balance), so re-importing overlapping statements skips duplicates. `lib/reconcile.js` matches lines to entries (same account or no account, same direction, same amount, ±4 days; a reference match wins, and a tie is left for a person), then applies `bank_rules`. Rule entries are `pending` unless the rule is auto-post and Autopilot's `bank_autopost` is on.
+
+### Reminders & calendar
+`lib/upcoming.js` is the single list of money due (used by the `pay_reminders` Autopilot job and by `lib/ics.js`). The feed is all-day events with stable UIDs (`doc-<id>`, `due-<id>`, `rec-<id>-<date>`) so calendar apps update instead of duplicating; text is RFC 5545-escaped and folded at 75 bytes. Set `APP_URL` so the copied link has the public domain. The feed path must not be behind login in nginx (it is under `/api`, already proxied).
 
 ### Email (SMTP)
 Settings → Integrations → Email. Hostinger: `smtp.hostinger.com`, port 465, full mailbox address + password. Gmail: an App Password. "Test" sends to the logged-in admin.

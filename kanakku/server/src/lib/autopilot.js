@@ -24,13 +24,14 @@ const DEFAULTS = {
     alerts: { on: true, at: '08:00', low_cash_days: 30, budget_pct: 90, backup_hours: 36 },
     weekly_brief: { on: true, at: '09:00', weekday: 1 },
     reminders: { on: true, at: '10:00', days_before: 2, repeat_days: 3 },
+    pay_reminders: { on: true, at: '09:30', days_before: 3 },
     investor_statements: { on: true, at: '11:00' },
     bank_autopost: { on: true },
   },
 };
 const JOB_NAMES = {
   recurring: 'Recurring entries', month_lock: 'Close last month', alerts: 'Alerts', weekly_brief: 'Monday money brief',
-  reminders: 'Payment reminders', investor_statements: 'Investor statements', bank_autopost: 'Bank rules post directly',
+  reminders: 'Payment reminders', pay_reminders: 'To pay — reminders to you', investor_statements: 'Investor statements', bank_autopost: 'Bank rules post directly',
 };
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
@@ -161,6 +162,24 @@ const JOBS = {
     }
     const total = inv.length + man.length;
     return { summary: total ? `${sent} of ${total} reminders sent${failed.length ? ` · ${failed.length} failed (${failed[0]})` : ''}` : 'No one to remind today', detail: { failed }, ok: !failed.length || sent > 0 };
+  },
+
+  // Reminds admins (WhatsApp + email) about money WE have to pay: rent, EMIs, salaries, vendor bills, refunds, payable dues.
+  // One message a day, only when something is due in exactly N days, tomorrow, today, or is overdue.
+  async pay_reminders(cfg, now) {
+    const { upcoming } = require('./upcoming');
+    const n = Number(cfg.days_before ?? 3);
+    const all = (await upcoming({ to: new Date(new Date(`${now.date}T00:00:00Z`).getTime() + n * 864e5).toISOString().slice(0, 10) }))
+      .filter((i) => i.direction === 'out');
+    const pick = all.filter((i) => i.days_left < 0 || [0, 1, n].includes(i.days_left));
+    if (!pick.length) return { summary: all.length ? `${all.length} payment(s) coming, none needs a reminder today` : 'Nothing to pay soon' };
+    const when = (d) => (d < 0 ? `overdue ${-d} day${d === -1 ? '' : 's'}` : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`);
+    const total = pick.reduce((s, i) => s + i.amount, 0);
+    const text = `To pay — ₹${fmt(total)}: ` + pick.slice(0, 12).map((i) => `${i.title.replace(/^Pay( bill)? · /, '')} ₹${fmt(i.amount)} (${when(i.days_left)})`).join('; ')
+      + (pick.length > 12 ? `; +${pick.length - 12} more` : '');
+    const res = await notifyAdmins('To pay', text);
+    return { summary: `${pick.length} payment(s), ₹${fmt(total)} — sent to ${res.filter((x) => x.whatsapp || x.email).length} of ${res.length} admins`,
+      detail: { items: pick, res }, ok: res.some((x) => x.whatsapp || x.email) };
   },
 
   async investor_statements(cfg, now) {

@@ -180,6 +180,21 @@ test('books: full money flow on a test database', { skip: !base && 'no DATABASE_
     assert.equal(s.months.find((m) => m.month === '2026-11').brands[0].share_pct, 20);
   });
 
+  await t.test('what is due: bills, recurring EMIs and payables, for reminders and the calendar', async () => {
+    const { upcoming } = require('../src/lib/upcoming');
+    const loanCat = await cat('Loan repaid', 'out');
+    await query(`INSERT INTO recurring (name,template,frequency,day,next_date,auto_post) VALUES ('Car loan EMI', $1, 'monthly', 7, '2026-11-07', false)`,
+      [JSON.stringify({ type: 'out', amount: 12500, brand_id: TX, category_id: loanCat })]);
+    await query("INSERT INTO dues (brand_id,direction,party,amount,due_date) VALUES ($1,'payable','Landlord deposit',20000,'2026-11-03')", [TX]);
+    const items = await upcoming({ from: '2026-11-01', to: '2026-11-30', today: '2026-11-04' });
+    const emi = items.find((i) => i.title.includes('Car loan EMI'));
+    assert.ok(emi, 'EMI listed'); assert.equal(emi.kind, 'EMI'); assert.equal(emi.date, '2026-11-07'); assert.equal(emi.days_left, 3);
+    const dep = items.find((i) => i.party === 'Landlord deposit');
+    assert.ok(dep && dep.direction === 'out' && dep.days_left === -1, 'payable due listed as overdue');
+    const { buildIcs } = require('../src/lib/ics');
+    assert.match(buildIcs(items), /Car loan EMI/);
+  });
+
   await pool.end?.();
   if (!process.env.KANAKKU_KEEP_TEST_DB && ok && dbName.endsWith('_test')) { try { await adminQuery(`DROP DATABASE IF EXISTS ${dbName}`); } catch { /* fine */ } }
 });

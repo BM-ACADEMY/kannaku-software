@@ -6,6 +6,7 @@ import SplitEditor, { splitTotal } from '../components/SplitEditor.jsx';
 
 const JOBS = [
   { key: 'recurring', what: 'Makes rent, salaries, subscriptions and other repeating entries on their day. They wait in Book → To confirm unless set to post directly.' },
+  { key: 'pay_reminders', what: 'Reminds you (admins) on WhatsApp + email about what WE must pay — rent, EMIs, salaries, vendor bills, refunds — a few days before, the day before, on the day, and every day once overdue.', extra: [['days_before', 'First reminder (days before)', 'number']] },
   { key: 'reminders', what: 'WhatsApps customers a polite reminder for invoices and dues that are due soon or overdue.', extra: [['days_before', 'Days before due', 'number'], ['repeat_days', 'Repeat every (days)', 'number']] },
   { key: 'weekly_brief', what: 'Sends admins a short money summary — income, spend, cash, what to collect and pay.', extra: [['weekday', 'Day', 'weekday']] },
   { key: 'investor_statements', what: "On each investor's statement day, sends last month's profit-share statement by WhatsApp and email." },
@@ -155,6 +156,70 @@ function Recurring() {
   );
 }
 
+function Coming() {
+  const { user, notify } = useApp();
+  const admin = user.role === 'admin';
+  const [days, setDays] = useState(30);
+  const { data: list, error } = useAsync(() => api(`/calendar/upcoming?days=${days}`), [days]);
+  const { data: cal, reload } = useAsync(() => (admin ? api('/calendar/settings') : Promise.resolve(null)), [admin]);
+  const [busy, setBusy] = useState(false);
+  const setCal = async (patch) => {
+    setBusy(true);
+    try { await api('/calendar/settings', { method: 'POST', body: { enabled: cal.enabled, include_in: cal.include_in, days_ahead: cal.days_ahead, ...patch } }); reload(); notify('Saved'); }
+    catch (e) { notify(e.message); } setBusy(false);
+  };
+  const copy = async () => { try { await navigator.clipboard.writeText(cal.url); notify('Link copied'); } catch { notify('Select the link and copy it'); } };
+  const out = (list || []).filter((i) => i.direction === 'out'); const inn = (list || []).filter((i) => i.direction === 'in');
+  const sum = (a) => a.reduce((s, i) => s + i.amount, 0);
+  const when = (d) => (d < 0 ? <span className="out">overdue {-d}d</span> : d === 0 ? <strong>today</strong> : d === 1 ? 'tomorrow' : `in ${d} days`);
+  return (
+    <>
+      {admin && cal && (
+        <div className="card card-pad" style={{ marginBottom: 14 }}>
+          <div className="row"><h3 style={{ margin: 0 }}>📅 Google Calendar</h3><span className="spacer" />
+            <label className="switch"><input type="checkbox" checked={cal.enabled} disabled={busy} onChange={(e) => setCal({ enabled: e.target.checked })} /><span /></label></div>
+          {!cal.enabled ? <p className="muted small" style={{ marginBottom: 0 }}>Turn on to get a private link. Add it once to Google Calendar and every rent, EMI, salary, bill due date{cal.include_in ? ' and expected customer payment' : ''} shows up there and keeps itself updated.</p> : <>
+            <div className="row" style={{ marginTop: 10 }}>
+              <input className="input" readOnly value={cal.url} onFocus={(e) => e.target.select()} style={{ flex: 1, minWidth: 240, fontFamily: 'ui-monospace, monospace', fontSize: 12 }} />
+              <button className="btn primary sm" onClick={copy}>Copy link</button>
+            </div>
+            <ol className="small" style={{ margin: '10px 0 0', paddingLeft: 18, lineHeight: 1.7 }}>
+              <li>On a computer open <strong>calendar.google.com</strong> → left side, <strong>Other calendars</strong> → <strong>+</strong> → <strong>From URL</strong>.</li>
+              <li>Paste the link → <strong>Add calendar</strong>. It appears on your phone's Google Calendar too.</li>
+              <li>To get pop-up alerts: click the new calendar's ⋮ → <strong>Settings</strong> → <strong>Event notifications</strong> → e.g. 1 day before, 9:00.</li>
+            </ol>
+            <div className="row" style={{ marginTop: 10 }}>
+              <label className="toggle"><input type="checkbox" checked={cal.include_in} disabled={busy} onChange={(e) => setCal({ include_in: e.target.checked })} />Also show money coming in (customer invoices)</label>
+              <span className="spacer" />
+              <button className="btn sm" disabled={busy} onClick={() => window.confirm('Make a new link? The old link stops working — you will need to add the new one to Google Calendar again.') && setCal({ new_link: true })}>New link</button>
+            </div>
+            <p className="muted small" style={{ marginBottom: 0 }}>Anyone with this link can see these dates and amounts — keep it private. Google refreshes it every few hours, so a change in Kanakku can take a while to show.</p>
+          </>}
+        </div>
+      )}
+      <div className="filters"><div className="seg">{[7, 30, 60, 90].map((d) => <button key={d} className={days === d ? 'on' : ''} onClick={() => setDays(d)}>{d} days</button>)}</div>
+        {list && <span className="muted small">To pay <strong className="out">{inr(sum(out))}</strong> · to collect <strong className="in">{inr(sum(inn))}</strong></span>}</div>
+      <Err error={error} />
+      {!list && !error && <Loader />}
+      {list && (
+        <div className="card table-wrap">
+          {list.length === 0 ? <Empty>Nothing due.</Empty> : (
+            <table className="t">
+              <thead><tr><th>When</th><th>What</th><th className="hide-sm">Type</th><th className="num">Amount</th></tr></thead>
+              <tbody>{list.map((i) => (
+                <tr key={i.key}><td style={{ whiteSpace: 'nowrap' }}>{fmtDate(i.date)}<div className="small muted">{when(i.days_left)}</div></td>
+                  <td>{i.title}<div className="muted small">{[i.brand, i.ref].filter(Boolean).join(' · ')}</div></td>
+                  <td className="hide-sm"><span className="pill">{i.kind}</span></td>
+                  <td className={`num ${i.direction}`}>{i.direction === 'out' ? '−' : ''}{inr(i.amount)}</td></tr>))}</tbody>
+            </table>
+          )}
+        </div>
+      )}
+      <p className="muted small">Loans: add the EMI as a recurring entry (Money out, category <strong>Loan repaid</strong>) — it shows here as EMI, reminds you, and goes to the calendar. Money borrowed goes in the Book as <strong>Loan received</strong>. Neither counts as profit or loss.</p>
+    </>
+  );
+}
+
 function Log({ data }) {
   return (
     <div className="card table-wrap">
@@ -176,9 +241,9 @@ export default function Autopilot() {
   return (
     <>
       <div className="page-head"><div><h1>Autopilot</h1><p>What Kanakku does by itself every day — and what it did.</p></div></div>
-      <div className="tabs">{[['jobs', 'Daily jobs'], ['recurring', 'Recurring entries'], ['log', 'What it did']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
+      <div className="tabs">{[['jobs', 'Daily jobs'], ['coming', 'Coming up & calendar'], ['recurring', 'Recurring entries'], ['log', 'What it did']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
       <Err error={error} />
-      {tab === 'recurring' ? <Recurring /> : !data ? <Loader /> : tab === 'jobs' ? <Jobs data={data} reload={reload} /> : <Log data={data} />}
+      {tab === 'coming' ? <Coming /> : tab === 'recurring' ? <Recurring /> : !data ? <Loader /> : tab === 'jobs' ? <Jobs data={data} reload={reload} /> : <Log data={data} />}
     </>
   );
 }

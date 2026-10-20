@@ -38,6 +38,8 @@ app.use(['/api/auth/login', '/api/auth/login/otp', '/api/auth/change-password', 
 app.use(['/api/auth/forgot', '/api/auth/reset'], rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/internal', requireInternalKey, require('./routes/internal'));
+// Calendar feed is opened by Google/Apple Calendar without a login — the secret token in its URL is the key
+app.use('/api/calendar', require('./routes/calendar'));
 // Investor logins see only their own statement (+ brand names) — everything else is staff-only
 app.use('/api', requireAuth, (req, _res, next) => {
   if (req.user.role !== 'investor' || req.path === '/bootstrap' || req.path.startsWith('/portal/')) return next();

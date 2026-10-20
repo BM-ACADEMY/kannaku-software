@@ -13,7 +13,7 @@ Dada's Kitchen, Velai Vaaippu, EduConsultants, ThePlotOne, Nera, GymDesk and Hea
 | **Investors** | Profit-share (no interest). Own % per brand per investor, changes dated so past months never move, pooled or per-brand loss rule, capital tranches, accruals, payouts, monthly statement |
 | **Reports** | P&L by brand (GST kept out, TDS counted), budget vs actual, 30/60/90-day cash forecast, GSTR-1 + GSTR-3B sheet for the CA, TDS register |
 | **Money** | Live balance per account, bank statement import with auto-matching, and auto rules that sort lines by themselves |
-| **Autopilot** | Daily jobs inside the app: recurring entries, reminders, Monday brief, investor statements, month close, alerts — with a log |
+| **Autopilot** | Daily jobs inside the app: recurring entries, reminders, Monday brief, investor statements, month close, alerts — with a log. **To-pay reminders** (rent, EMI, bills) each morning, and a private **Google Calendar link** of everything due |
 | **Settings** | Company details on invoices, brands, split rules, categories, accounts & opening balances, books lock, 2-step login, integrations (AI, Razorpay, WhatsApp, email), users & roles (incl. investor logins) |
 
 Autopilot runs inside the app (no n8n needed): reminders, Monday brief, investor statements, recurring entries, month close, alerts. **Upgrading from v1? Read docs/UPGRADE_v2.md.**
