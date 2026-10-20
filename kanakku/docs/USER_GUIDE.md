@@ -24,6 +24,7 @@ Open **kanakku.afraventures.in** on phone or laptop and log in with your email.
 1. **+ New quotation** → pick brand and customer (**+** to add a new customer with their state and GSTIN).
 2. Add lines with rate and GST %. Tax is worked out by itself — Puducherry customers get CGST+SGST, other states IGST.
 3. Save → **WhatsApp** to send it, or **Print / PDF**.
+   - **Print / PDF:** in the print window choose *Save as PDF* (the file is named after the invoice number), paper **A4**, and untick *Headers and footers* so the web address and date don't print in the margins. Long invoices run over several pages with the column titles repeated. To send the PDF on WhatsApp, save it, then attach it in the chat.
 4. Customer agrees → **Convert to invoice**.
 5. Money received → **Record payment**. It goes into the Book by itself. Part payments are fine. If the customer kept TDS, enter it — Kanakku fills the usual % for that customer.
 6. Discount or mistake after invoicing? Open the invoice → **Credit note**. It reduces what they owe; if they'd already paid, it shows as a refund to pay.

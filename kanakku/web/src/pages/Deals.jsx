@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, qs } from '../lib/api.js';
 import { amountInWords, fmtDate, inr, inr2, today } from '../lib/format.js';
 import { BrandSelect, BrandTag, Empty, Err, Field, Loader, Modal, useApp, useAsync } from '../components/ui.jsx';
@@ -182,7 +183,7 @@ export function DocSheet({ doc }) {
         <div><div className="lbl">Place of supply</div>{stateName(doc.place_of_supply)} ({doc.place_of_supply})
           {doc.doc_type === 'credit_note' && doc.notes && <><div className="lbl" style={{ marginTop: 10 }}>Reason</div>{doc.notes}</>}</div>
       </div>
-      <table>
+      <div className="doc-table"><table>
         <thead><tr><th>#</th><th>Description</th><th>HSN/SAC</th><th style={{ textAlign: 'right' }}>Qty</th><th style={{ textAlign: 'right' }}>Rate</th><th style={{ textAlign: 'right' }}>GST</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
         <tbody>
           {doc.items.map((it, i) => (
@@ -190,7 +191,8 @@ export function DocSheet({ doc }) {
               <td className="num">{it.qty}</td><td className="num">{inr2(it.rate)}</td><td className="num">{it.gst_rate}%</td><td className="num">{inr2(it.amount)}</td></tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
+      <div className="doc-end">
       <div style={{ display: 'flex', marginTop: 16, gap: 20, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, fontSize: 12, minWidth: 220 }}>
           <div className="lbl">Amount in words</div>{amountInWords(doc.total)}
@@ -211,6 +213,7 @@ export function DocSheet({ doc }) {
         </div>
       </div>
       {!isBill && <div style={{ marginTop: 40, textAlign: 'right', fontSize: 12 }}>For {co.legal_name}<br /><br /><br />Authorised Signatory</div>}
+      </div>
       <div style={{ marginTop: 20, fontSize: 11, color: '#6b7280', textAlign: 'center' }}>{co.cin && `CIN ${co.cin} · `}{co.website}</div>
     </div>
   );
@@ -306,6 +309,14 @@ function DocView({ id, onClose, onChanged }) {
   const waText = encodeURIComponent(`Hello ${doc.customer.name}, here is your ${LABEL[type]} ${doc.number} from ${doc.brand_name} (${boot.company.short_name}) for ${inr2(doc.total)}${type === 'invoice' && doc.balance < doc.total ? `, balance ${inr2(doc.balance)}` : ''}. Thank you!`);
   const wa = doc.customer.phone && type !== 'bill' ? `https://wa.me/${doc.customer.phone.replace(/\D/g, '').replace(/^(\d{10})$/, '91$1')}?text=${waText}` : null;
   const untouched = Number(doc.amount_paid) === 0 && Number(doc.amount_credited) === 0;
+  const printDoc = () => {
+    // "Save as PDF" uses the page title as the file name
+    const old = document.title;
+    document.title = `${doc.number.replace(/[/\\]/g, '-')} ${doc.customer.name}`.trim();
+    const back = () => { document.title = old; window.removeEventListener('afterprint', back); };
+    window.addEventListener('afterprint', back);
+    window.print();
+  };
 
   return (
     <>
@@ -314,7 +325,7 @@ function DocView({ id, onClose, onChanged }) {
           <button className="btn danger" onClick={() => window.confirm(`Cancel this ${LABEL[type]}?`) && act('cancel', {}, 'Cancelled')}>Cancel</button>}
         <span className="spacer" />
         {wa && <a className="btn" href={wa} target="_blank" rel="noreferrer">WhatsApp</a>}
-        <button className="btn" onClick={() => window.print()}>Print / PDF</button>
+        <button className="btn" onClick={printDoc}>Print / PDF</button>
         {type !== 'credit_note' && !['converted', 'cancelled', 'paid'].includes(doc.status) && untouched && (isQuote || canMoney) &&
           <button className="btn" onClick={() => setMode('edit')}>Edit</button>}
         {isQuote && doc.status === 'draft' && <button className="btn" onClick={() => act('status', { status: 'sent' }, 'Marked sent')}>Mark sent</button>}
@@ -331,6 +342,8 @@ function DocView({ id, onClose, onChanged }) {
         {doc.credit_notes?.length > 0 && <div className="note-box">Credit notes: {doc.credit_notes.map((c) => `${c.number} ${inr2(c.total)}`).join(' · ')}</div>}
         {type === 'credit_note' && doc.balance > 0.009 && <div className="banner">We owe {doc.customer.name} a refund of {inr2(doc.balance)} — it's listed under Dues → To pay.</div>}
         <DocSheet doc={doc} />
+        {/* Print copy: lives directly under <body>, so the pop-up's scrolling/fixed layout can't cut it off */}
+        {createPortal(<div className="print-root"><DocSheet doc={doc} /></div>, document.body)}
         {canMoney && <Attachments entity="document" id={doc.id} />}
       </Modal>
       {mode === 'pay' && <PaymentForm doc={doc} onClose={() => setMode(null)} onSaved={(r) => { setDoc(r); setMode(null); onChanged(); notify(type === 'credit_note' ? 'Refund recorded' : 'Payment recorded'); }} />}

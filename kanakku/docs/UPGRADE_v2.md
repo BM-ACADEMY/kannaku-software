@@ -35,6 +35,7 @@ Database changes apply automatically on start (`initDb.js` runs `schema.sql` + `
 | Book totals were summed from the first 300 rows only | Totals come from the database over every matching entry; the list pages |
 | Investor capital, GST paid to government and loans showed as profit/loss | Categories have `in_pnl`; those are outside P&L |
 | No backups on the LeadOS-VPS compose file | `kanakku-backup` service added; both setups also back up bill photos; optional off-site copy |
+| Print / PDF of an invoice started halfway down the page and cut off everything after "Bill to" (items, totals, bank details, signature); long invoices printed only 1 page; on phones the invoice ran off the screen | Printing uses a clean copy placed directly under `<body>` (React portal, `.print-root`), A4 page, column titles repeat on each page, totals/bank/signature kept together, PDF file named after the invoice number. Phone view fits the screen; the item table scrolls inside |
 | Saved Razorpay/WhatsApp/AI keys were locked with `JWT_SECRET` (changing it silently wiped them) | Own `INTEGRATIONS_KEY`; old values still read and are re-saved with the new key on start |
 
 ## New features
