@@ -4,3 +4,4 @@ dist
 backups
 .env.*
 !.env.example
+deploy/rclone/

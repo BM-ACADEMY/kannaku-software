@@ -11,7 +11,7 @@ const iso = (d) => d.toISOString().slice(0, 10);
 // Invoices + manual receivables due within N days or overdue, not reminded in the last 3 days (n8n marks them after sending)
 router.get('/dues-reminders', ah(async (req, res) => {
   const days = Number(req.query.days || 2);
-  const inv = await query(`SELECT 'invoice' AS kind, d.id, d.number, c.name AS party, c.phone, (d.total-d.amount_paid) AS balance,
+  const inv = await query(`SELECT 'invoice' AS kind, d.id, d.number, c.name AS party, c.phone, (d.total-d.amount_paid-d.amount_credited) AS balance,
       d.due_date, b.name AS brand_name
     FROM documents d JOIN customers c ON c.id=d.customer_id JOIN brands b ON b.id=d.brand_id
     WHERE d.doc_type='invoice' AND d.status IN ('unpaid','partial') AND d.due_date IS NOT NULL
@@ -52,7 +52,7 @@ router.post('/dues-reminders/mark', ah(async (req, res) => {
 router.get('/weekly-brief', ah(async (_req, res) => {
   const to = new Date(); const from = new Date(Date.now() - 6 * 864e5);
   const r = await pnl({ from: iso(from), to: iso(to) });
-  const recv = (await query(`SELECT COALESCE(SUM(total-amount_paid),0) AS amt, COUNT(*) FILTER (WHERE due_date<CURRENT_DATE) AS overdue
+  const recv = (await query(`SELECT COALESCE(SUM(total-amount_paid-amount_credited),0) AS amt, COUNT(*) FILTER (WHERE due_date<CURRENT_DATE) AS overdue
     FROM documents WHERE doc_type='invoice' AND status IN ('unpaid','partial')`)).rows[0];
   const pay = (await query("SELECT COALESCE(SUM(amount-amount_settled),0) AS amt FROM dues WHERE status='open' AND direction='payable'")).rows[0];
   const summary = { ...r, receivable: Number(recv.amt), overdue: Number(recv.overdue), payable: Number(pay.amt) };

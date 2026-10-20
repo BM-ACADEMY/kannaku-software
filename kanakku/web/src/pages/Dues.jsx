@@ -114,7 +114,7 @@ export default function Dues() {
                       <td className="num">
                         <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
                           {r.status === 'open' && r.direction === 'receivable' && r.phone && <button className="btn sm" onClick={() => remind(r)}>Remind</button>}
-                          {r.origin === 'invoice' && <button className="btn sm" onClick={() => go('deals')}>Invoice</button>}
+                          {r.origin !== 'manual' && <button className="btn sm" onClick={() => go('deals')}>{r.origin === 'invoice' ? 'Invoice' : r.origin === 'bill' ? 'Bill' : 'Credit note'}</button>}
                           {r.origin === 'manual' && r.status === 'open' && canEdit && <>
                             <button className="btn sm" onClick={() => setForm(r)}>Edit</button>
                             <button className="btn sm green" onClick={() => setSettle(r)}>Settle</button>

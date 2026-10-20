@@ -57,3 +57,26 @@ INSERT INTO split_presets (name, rules) SELECT 'Equal — investor pool brands',
 ON CONFLICT (name) DO NOTHING;
 UPDATE categories SET default_preset_id = (SELECT id FROM split_presets WHERE name='Office overheads (all running brands)')
   WHERE kind='out' AND name IN ('Rent','Electricity & utilities','Internet & phone','Office expense','Software & tools') AND default_preset_id IS NULL;
+
+-- ── v2.0 ──
+INSERT INTO categories (name, kind, in_pnl) VALUES
+  ('Investor capital','in',FALSE), ('Loan received','in',FALSE), ('GST refund','in',FALSE),
+  ('GST paid','out',FALSE), ('TDS paid','out',FALSE), ('Loan repaid','out',FALSE), ('Refund to customer','out',TRUE)
+ON CONFLICT (name, kind) DO NOTHING;
+UPDATE categories SET in_pnl=FALSE WHERE name IN ('Investor payout','Investor capital','GST paid','TDS paid','Loan received','Loan repaid','GST refund');
+INSERT INTO accounts (name, kind) VALUES ('RBL Current A/c','bank') ON CONFLICT (name) DO NOTHING;
+INSERT INTO settings (key, value) VALUES
+  ('books', '{"lock_until": null, "autolock_day": 10, "require_admin_2fa": false}'::jsonb),
+  ('autopilot', '{
+     "enabled": true,
+     "jobs": {
+       "recurring":      {"on": true,  "at": "06:00"},
+       "reminders":      {"on": true,  "at": "10:00", "days_before": 2, "repeat_days": 3},
+       "weekly_brief":   {"on": true,  "at": "09:00", "weekday": 1},
+       "investor_statements": {"on": true, "at": "11:00"},
+       "month_lock":     {"on": true,  "at": "07:00"},
+       "bank_autopost":  {"on": true},
+       "alerts":         {"on": true,  "at": "08:00", "low_cash_days": 30, "budget_pct": 90, "backup_hours": 36}
+     }
+   }'::jsonb)
+ON CONFLICT (key) DO NOTHING;

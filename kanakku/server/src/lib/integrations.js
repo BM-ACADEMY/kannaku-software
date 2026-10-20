@@ -1,5 +1,5 @@
 // Integration keys (AI, Razorpay, WhatsApp) editable from Settings → Integrations.
-// Stored in settings('integrations'); secrets are AES-256-GCM encrypted with a key derived from JWT_SECRET.
+// Stored in settings('integrations'); secrets are AES-256-GCM encrypted with INTEGRATIONS_KEY (see lib/secrets.js).
 // A field left empty in the panel falls back to the matching .env variable, so existing installs keep working.
 const crypto = require('crypto');
 const { query } = require('./db');
@@ -19,26 +19,19 @@ const FIELDS = {
   whatsapp: {
     phone_number_id: { env: 'WA_PHONE_NUMBER_ID' },
     token: { env: 'WA_TOKEN', secret: true },
+    template_lang: { env: 'WA_TEMPLATE_LANG', fallback: 'en' },
+  },
+  // Email — for forgot-password links, backup alerts and statements (any SMTP: Hostinger mail, Gmail app password, Zoho…)
+  email: {
+    host: { env: 'SMTP_HOST' },
+    port: { env: 'SMTP_PORT', fallback: '465' },
+    user: { env: 'SMTP_USER' },
+    pass: { env: 'SMTP_PASS', secret: true },
+    from: { env: 'SMTP_FROM' },
   },
 };
 
-const KEY = () => crypto.createHash('sha256').update(`${process.env.JWT_SECRET}|kanakku-integrations`).digest();
-function encrypt(text) {
-  const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', KEY(), iv);
-  const enc = Buffer.concat([c.update(String(text), 'utf8'), c.final()]);
-  return `v1:${iv.toString('base64')}:${c.getAuthTag().toString('base64')}:${enc.toString('base64')}`;
-}
-function decrypt(blob) {
-  try {
-    const [, iv, tag, enc] = String(blob).split(':');
-    const d = crypto.createDecipheriv('aes-256-gcm', KEY(), Buffer.from(iv, 'base64'));
-    d.setAuthTag(Buffer.from(tag, 'base64'));
-    return Buffer.concat([d.update(Buffer.from(enc, 'base64')), d.final()]).toString('utf8');
-  } catch {
-    return ''; // JWT_SECRET changed or value damaged — treat as not set
-  }
-}
+const { encrypt, decrypt, needsRewrap } = require('./secrets');
 
 let cache = null;
 let cachedAt = 0;
@@ -107,4 +100,25 @@ async function saveGroup(group, patch) {
   return changed;
 }
 
-module.exports = { FIELDS, getConfig, publicView, saveGroup };
+// Old installs: secrets were encrypted with a key from JWT_SECRET. Once INTEGRATIONS_KEY is set,
+// re-save them with it (runs once at start-up; values that can't be read are left alone).
+async function reencryptAll() {
+  const stored = { ...(await loadStored()) };
+  let changed = 0;
+  for (const [group, fields] of Object.entries(FIELDS)) {
+    for (const [name, f] of Object.entries(fields)) {
+      const raw = stored[group]?.[name];
+      if (f.secret && raw && needsRewrap(raw)) {
+        const plain = decrypt(raw);
+        if (plain) { stored[group][name] = encrypt(plain); changed++; }
+      }
+    }
+  }
+  if (changed) {
+    await query("UPDATE settings SET value=$1 WHERE key='integrations'", [JSON.stringify(stored)]);
+    cache = null;
+  }
+  return changed;
+}
+
+module.exports = { FIELDS, getConfig, publicView, saveGroup, reencryptAll };

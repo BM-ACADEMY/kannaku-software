@@ -57,6 +57,21 @@ The code is written. These days are for setup, testing with real data, fixes and
 - [ ] P&L by brand equals Book totals for the same dates (excluding investor payouts)
 - [ ] GST register totals equal the sum of that month's invoices; CSV opens in Excel
 
+**v2 — money must be right**
+- [ ] Invoice ₹60,000 + 18% paid as ₹64,800 + TDS ₹6,000 → invoice "paid", P&L income ₹60,000 (not ₹70,800), Reports → TDS shows ₹6,000
+- [ ] Bill ₹8,500 + GST ₹1,530 paid → P&L cost ₹8,500; GST returns shows ₹1,530 input credit
+- [ ] Credit note on an unpaid invoice reduces its balance; on a paid one it shows under Dues → To pay; Refund posts a Money-out
+- [ ] Transfer cash → RBL: balances move, P&L doesn't
+- [ ] Investor capital entry: bank balance goes up, P&L doesn't
+- [ ] Book with more than 200 entries: totals at the top don't change when you "Show more"
+- [ ] Close September → a September entry can't be added, edited or deleted; reopening is in the Activity log
+- [ ] Import an RBL CSV twice → second time "already imported"; matched lines link to their entries; a "Remember" rule sorts next month's line by itself
+- [ ] Recurring rent (post directly) + salary (to confirm) appear on their days; nothing appears twice
+- [ ] GSTR-3B "pay in cash" = output GST − input credit, checked by the CA for one month
+- [ ] 2-step login on for an admin; forgot-password email arrives and the link works once only
+- [ ] Investor login sees only their statement; any other page/API is refused
+- [ ] `./kanakku.sh test` passes on the server
+
 **Automations**
 - [ ] Razorpay test payment with note `invoice` = an invoice number marks it paid; repeat webhook is ignored
 - [ ] n8n reminder sends once and not again for 3 days

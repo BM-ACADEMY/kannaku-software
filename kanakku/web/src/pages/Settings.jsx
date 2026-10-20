@@ -182,11 +182,13 @@ const ROLES = [
   { key: 'admin', label: 'Admin', desc: 'Everything — settings, brands, users, investors, deletes and write-offs.' },
   { key: 'accounts', label: 'Accounts', desc: 'Book, deals, payments, dues, investors (view), P&L and GST.' },
   { key: 'sales', label: 'Sales', desc: 'Customers, quotations and what is due to collect.' },
+  { key: 'investor', label: 'Investor', desc: 'Sees only their own profit-share statement — nothing else.' },
 ];
 
 function Users() {
   const { user: me, notify } = useApp();
   const { data, reload } = useAsync(() => api('/users'), []);
+  const { data: investors } = useAsync(() => api('/investors'), []);
   const [edit, setEdit] = useState(null);
   const [error, setError] = useState('');
   const [showPw, setShowPw] = useState(false);
@@ -194,7 +196,7 @@ function Users() {
   const users = data || [];
   const open = (u) => { setError(''); setShowPw(false); setEdit(u); };
   const blank = (role = 'accounts') => open({ name: '', email: '', phone: '', role, password: '', active: true });
-  const invalid = edit && (!edit.name.trim() || (!edit.id && !/^\S+@\S+\.\S+$/.test(edit.email)) || (!edit.id && edit.password.length < 8) || (edit.password && edit.password.length < 8));
+  const invalid = edit && ((edit.role === 'investor' && !edit.investor_id) || !edit.name.trim() || (!edit.id && !/^\S+@\S+\.\S+$/.test(edit.email)) || (!edit.id && edit.password.length < 8) || (edit.password && edit.password.length < 8));
   const save = async () => {
     setSaving(true); setError('');
     try {
@@ -207,7 +209,7 @@ function Users() {
   return (
     <Section title="Team & roles" desc="Who can log in and what they can see."
       action={<button className="btn primary sm" onClick={() => blank()}>+ Add user</button>}>
-      <div className="grid g3 role-cards">
+      <div className="grid g4 role-cards">
         {ROLES.map((r) => {
           const n = users.filter((u) => u.role === r.key && u.active).length;
           return (
@@ -225,7 +227,7 @@ function Users() {
           <tbody>{users.map((u) => (
             <tr key={u.id} className={`click${u.active ? '' : ' dim'}`} onClick={() => open({ ...u, phone: u.phone || '', password: '' })}>
               <td><div className="user-cell"><Avatar name={u.name} /><div><div className="user-name">{u.name}{u.id === me.id && <span className="you">You</span>}</div><div className="muted small">{u.email}</div></div></div></td>
-              <td><span className={`role-badge ${u.role}`}>{u.role}</span></td>
+              <td><span className={`role-badge ${u.role}`}>{u.role}</span>{u.investor_name && <div className="muted small">{u.investor_name}</div>}{u.totp_enabled && <div className="small in">2-step on</div>}</td>
               <td className="hide-sm">{u.phone || <span className="muted">—</span>}</td>
               <td><YesNo on={u.active} yes="Active" no="Disabled" /></td>
               <td className="hide-sm muted">{fmtDate(u.created_at)}</td>
@@ -254,9 +256,20 @@ function Users() {
                 <span className={`role-badge ${r.key}`}>{r.label}</span><span className="small muted">{r.desc}</span>
               </button>))}</div>
           </div>
+          {edit.role === 'investor' && (
+            <Field label="Which investor is this login for?">
+              <select className="input" value={edit.investor_id || ''} onChange={(e) => setEdit({ ...edit, investor_id: Number(e.target.value) || null })}>
+                <option value="">Pick…</option>{(investors || []).map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </Field>
+          )}
           {edit.id && edit.id !== me.id && (
             <label className="toggle"><input type="checkbox" checked={edit.active} onChange={(e) => setEdit({ ...edit, active: e.target.checked })} />Can log in (untick to disable without deleting)</label>
           )}
+          {edit.id && edit.totp_enabled && (
+            <label className="toggle"><input type="checkbox" checked={!!edit.reset_2fa} onChange={(e) => setEdit({ ...edit, reset_2fa: e.target.checked })} />Turn off their 2-step login (lost phone) — they set it up again next login</label>
+          )}
+          {edit.id && <div className="muted small">Saving a new password, a new role or disabling logs them out on every device.</div>}
         </Modal>
       )}
     </Section>
@@ -272,24 +285,26 @@ function Accounts() {
   const [error, setError] = useState('');
   const save = async () => {
     try {
-      const body = { name: edit.name, kind: edit.kind, active: edit.active };
+      const body = { name: edit.name, kind: edit.kind, active: edit.active, opening_balance: Number(edit.opening_balance) || 0, opening_date: String(edit.opening_date || '2026-09-12').slice(0, 10) };
       if (edit.id) await api(`/accounts/${edit.id}`, { method: 'PUT', body }); else await api('/accounts', { method: 'POST', body });
       setEdit(null); reload(); await reloadBoot(); notify('Account saved');
     } catch (e) { setError(e.message); }
   };
   return (
     <Section title="Payment accounts" desc="Where money sits — cash box, bank accounts, UPI, Razorpay. Picked on every Book entry and payment."
-      action={<button className="btn primary sm" onClick={() => { setError(''); setEdit({ name: '', kind: 'bank', active: true }); }}>+ Add account</button>}>
+      action={<button className="btn primary sm" onClick={() => { setError(''); setEdit({ name: '', kind: 'bank', active: true, opening_balance: 0, opening_date: '2026-09-12' }); }}>+ Add account</button>}>
       <Err error={loadError} />
       <div className="card table-wrap">
         {!data ? <Loader /> : (
           <table className="t">
-            <thead><tr><th>Account</th><th>Type</th><th className="num">Entries</th><th>Status</th><th /></tr></thead>
+            <thead><tr><th>Account</th><th>Type</th><th className="num">Opening</th><th className="num">Balance now</th><th className="num hide-sm">Entries</th><th>Status</th><th /></tr></thead>
             <tbody>{data.map((a) => (
               <tr key={a.id} className={a.active ? '' : 'dim'}>
                 <td style={{ fontWeight: 600 }}>{a.name}</td>
                 <td><span className={`kind-badge ${a.kind}`}>{KINDS[a.kind]}</span></td>
-                <td className="num">{a.entry_count}</td>
+                <td className="num">{inr(a.opening_balance)}<div className="muted small">{fmtDate(a.opening_date)}</div></td>
+                <td className={`num ${a.balance < 0 ? 'out' : ''}`} style={{ fontWeight: 600 }}>{inr(a.balance)}</td>
+                <td className="num hide-sm">{a.entry_count}</td>
                 <td><YesNo on={a.active} yes="Active" no="Hidden" /></td>
                 <td className="num"><button className="btn sm ghost" onClick={() => { setError(''); setEdit(a); }}>Edit</button></td>
               </tr>))}</tbody>
@@ -305,6 +320,11 @@ function Accounts() {
           <div className="field"><span>Type</span>
             <div className="seg">{Object.entries(KINDS).map(([k, l]) => <button key={k} type="button" className={edit.kind === k ? 'on' : ''} onClick={() => setEdit({ ...edit, kind: k })}>{l}</button>)}</div>
           </div>
+          <div className="grid g2">
+            <Field label="Opening balance ₹"><input className="input" type="number" value={edit.opening_balance ?? 0} onChange={(e) => setEdit({ ...edit, opening_balance: e.target.value })} /></Field>
+            <Field label="…on date"><input className="input" type="date" value={String(edit.opening_date || '2026-09-12').slice(0, 10)} onChange={(e) => setEdit({ ...edit, opening_date: e.target.value })} /></Field>
+          </div>
+          <div className="muted small">What this account held at the start of that day (from the bank statement). Entries before this date don't count in the balance.</div>
           <label className="toggle"><input type="checkbox" checked={edit.active} onChange={(e) => setEdit({ ...edit, active: e.target.checked })} />Show in pickers</label>
         </Modal>
       )}
@@ -315,10 +335,13 @@ function Accounts() {
 const ACTIONS = {
   create: 'created', update: 'updated', delete: 'deleted', cancel: 'cancelled', convert: 'converted', payment: 'recorded a payment on',
   settle: 'settled', write_off: 'wrote off', contribution: 'added capital for', payout: 'paid out to', change_password: 'changed their password',
+  confirm: 'confirmed', credit_note: 'issued a credit note on', refund: 'refunded', attach: 'attached a file to', detach: 'removed a file from',
+  bank_import: 'imported a bank statement into', close_books: 'closed the books', reopen_books: 'reopened the books', stop: 'stopped',
+  enable_2fa: 'turned on 2-step login', disable_2fa: 'turned off 2-step login', reset_password: 'reset their password', forgot_password: 'asked for a reset link',
 };
 const ENTITIES = {
   entry: 'Book entry', quote: 'quotation', invoice: 'invoice', due: 'due', investor: 'investor', brand: 'brand', split_preset: 'split rule',
-  user: 'user', settings: 'company settings', account: 'payment account',
+  user: 'user', settings: 'settings', account: 'payment account', bill: 'purchase bill', credit_note: 'credit note', recurring: 'recurring entry', document: 'document',
 };
 const TONE = { delete: 'out', cancel: 'out', write_off: 'out', create: 'in', payment: 'in', settle: 'in' };
 
@@ -417,10 +440,22 @@ const INTEGRATIONS = [
   },
   {
     key: 'whatsapp', title: 'WhatsApp (Meta Cloud API)', icon: Icon.chat,
-    desc: 'Daily dues reminders, Monday brief and monthly investor statements — sent by the n8n workflows through Kanakku.',
+    desc: 'Payment reminders, the Monday brief, alerts and investor statements — sent by Autopilot (no n8n needed).',
     fields: [
       { name: 'phone_number_id', label: 'Phone number ID', placeholder: 'From Meta → WhatsApp → API Setup' },
       { name: 'token', label: 'Permanent access token', placeholder: 'System User token (EAAG…)' },
+    ],
+  },
+  {
+    key: 'email', title: 'Email (SMTP)', icon: Icon.chat,
+    desc: 'Forgot-password links, alerts and investor statements by email. Hostinger mail: smtp.hostinger.com, port 465, your full email + its password. Gmail: smtp.gmail.com, 465, an App Password.',
+    ready: (v) => v.host.set && v.user.set && v.pass.set,
+    fields: [
+      { name: 'host', label: 'SMTP server', placeholder: 'smtp.hostinger.com' },
+      { name: 'port', label: 'Port', placeholder: '465' },
+      { name: 'user', label: 'Username (full email)', placeholder: 'hello@afraventures.in' },
+      { name: 'pass', label: 'Password / app password', placeholder: '••••••••' },
+      { name: 'from', label: 'Send as', placeholder: 'Kanakku <hello@afraventures.in>' },
     ],
   },
 ];
@@ -558,18 +593,63 @@ function Integrations() {
     whatsapp: (
       <div className="integ-steps">
         <div className="muted small">Templates needed in WhatsApp Manager (category Utility, English): <code className="code">afv_payment_reminder</code> <code className="code">afv_weekly_brief</code> <code className="code">afv_investor_statement</code>.
-          Turn on the three workflows in n8n — they pick up these keys from here, no restart needed.</div>
+          Once they're approved, Autopilot uses them — turn the jobs on in Autopilot. (If you also run the old n8n workflows, switch those off so nobody gets two messages.)</div>
       </div>
     ),
   };
   return (
-    <Section title="Integrations" desc="Keys for AI, Razorpay and WhatsApp. Change them here any time — they're encrypted and never shown again.">
+    <Section title="Integrations" desc="Keys for AI, Razorpay, WhatsApp and email. Change them here any time — they're encrypted and never shown again.">
       <div className="grid">{INTEGRATIONS.map((d) => <IntegrationCard key={d.key} def={d} view={data[d.key]} onSaved={reload} extra={extras[d.key]} />)}</div>
     </Section>
   );
 }
 
+function Books() {
+  const { notify, reloadBoot } = useApp();
+  const { data, error, reload } = useAsync(() => api('/settings/books'), []);
+  const [b, setB] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => { if (data) setB({ lock_until: data.lock_until || '', autolock_day: data.autolock_day ?? 10, require_admin_2fa: !!data.require_admin_2fa }); }, [data]);
+  if (error) return <Err error={error} />;
+  if (!b) return <Loader />;
+  const save = async (patch = {}) => {
+    setErr('');
+    try {
+      const body = { ...b, ...patch, lock_until: (patch.lock_until ?? b.lock_until) || null, autolock_day: Number(patch.autolock_day ?? b.autolock_day) };
+      await api('/settings/books', { method: 'PUT', body }); reload(); await reloadBoot(); notify('Saved');
+    } catch (e) { setErr(e.message); }
+  };
+  const lastMonthEnd = (() => { const d = new Date(); d.setDate(0); return d.toISOString().slice(0, 10); })();
+  return (
+    <>
+      <Section title="Close the books" desc="Once a month is closed, nothing dated in it can be added, changed or deleted — so statements already sent to investors and the CA stay true.">
+        <Err error={err} />
+        <div className="card card-pad">
+          <div className="row">
+            <div><div className="small muted">Closed up to</div><div style={{ fontSize: 20, fontWeight: 700 }}>{b.lock_until ? fmtDate(b.lock_until) : 'Nothing closed yet'}</div></div>
+            <span className="spacer" />
+            {b.lock_until !== lastMonthEnd && <button className="btn primary" onClick={() => window.confirm(`Close everything up to ${fmtDate(lastMonthEnd)}?`) && save({ lock_until: lastMonthEnd })}>Close up to {fmtDate(lastMonthEnd)}</button>}
+          </div>
+          <div className="grid g2" style={{ marginTop: 14 }}>
+            <Field label="Closed up to (change to reopen)"><input className="input" type="date" value={b.lock_until} onChange={(e) => setB({ ...b, lock_until: e.target.value })} /></Field>
+            <Field label="Autopilot closes last month on day"><select className="input" value={b.autolock_day} onChange={(e) => setB({ ...b, autolock_day: e.target.value })}>
+              <option value="0">Never (I'll close it myself)</option>{[5, 7, 10, 12, 15, 20].map((d) => <option key={d} value={d}>{d} of the next month</option>)}</select></Field>
+          </div>
+          <div className="row" style={{ marginTop: 10 }}><span className="muted small">Reopening is recorded in the Activity log. Autopilot won't close a month that still has entries waiting to be confirmed.</span><span className="spacer" /><button className="btn" onClick={() => save()}>Save</button></div>
+        </div>
+      </Section>
+      <Section title="Login security" desc="2-step login asks for a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator) after the password.">
+        <div className="card card-pad">
+          <label className="toggle"><input type="checkbox" checked={b.require_admin_2fa} onChange={(e) => { setB({ ...b, require_admin_2fa: e.target.checked }); save({ require_admin_2fa: e.target.checked }); }} />Admins must use 2-step login</label>
+          <div className="muted small" style={{ marginTop: 6 }}>Turn on your own first: your name (bottom left) → 2-step login. When this is on, an admin without it is asked to set it up right after logging in.</div>
+        </div>
+      </Section>
+    </>
+  );
+}
+
 const TABS = [
+  { key: 'books', label: 'Books & security', icon: Icon.key, el: Books },
   { key: 'company', label: 'Company', icon: Icon.company, el: Company },
   { key: 'brands', label: 'Brands', icon: Icon.brands, el: Brands },
   { key: 'splits', label: 'Split rules', icon: Icon.split, el: Presets },

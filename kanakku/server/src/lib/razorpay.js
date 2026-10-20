@@ -17,9 +17,12 @@ async function recordRazorpayPayment(pay, rzp) {
     const d = (await query("SELECT id FROM documents WHERE number=$1 AND doc_type='invoice'", [String(notes.invoice).trim()])).rows[0];
     if (d) {
       const inv = await loadDoc(d.id);
-      const apply = Math.min(amount, inv.total - inv.amount_paid);
+      const apply = Math.min(amount, inv.balance);
       if (apply > 0) {
-        await tx((client) => recordPayment(client, inv, { amount: apply, paid_on: date, account_id: acc?.id, ref: pay.id, source: 'razorpay' }));
+        const { lockUntil } = require('./books');
+        const lock = await lockUntil();
+        const paidOn = lock && date <= lock ? new Date(new Date(lock + 'T00:00:00Z').getTime() + 864e5).toISOString().slice(0, 10) : date;
+        await tx((client) => recordPayment(client, inv, { amount: apply, paid_on: paidOn, account_id: acc?.id, ref: pay.id, source: 'razorpay' }));
         return { matched_invoice: inv.number };
       }
     }
@@ -28,9 +31,14 @@ async function recordRazorpayPayment(pay, rzp) {
   const brand = (await query('SELECT id FROM brands WHERE code=$1', [code])).rows[0]
     || (await query("SELECT id FROM brands WHERE code='HO'")).rows[0];
   const cat = (await query("SELECT id FROM categories WHERE name='Client payment' AND kind='in'")).rows[0];
-  await query(`INSERT INTO entries (entry_date,brand_id,type,amount,category_id,account_id,party,note,ref,source)
-    VALUES ($1,$2,'in',$3,$4,$5,$6,$7,$8,'razorpay')`,
-  [date, brand.id, amount, cat?.id || null, acc?.id || null, pay.email || pay.contact || null, `Razorpay ${pay.method || ''} ${pay.description || ''}`.trim(), pay.id]);
+  const { insertEntry } = require('./ledger');
+  const { lockUntil } = require('./books');
+  // A payment dated inside a closed month is booked on the first open day instead, so closed months never change
+  const lock = await lockUntil();
+  let bookDate = date; let note = `Razorpay ${pay.method || ''} ${pay.description || ''}`.trim();
+  if (lock && date <= lock) { bookDate = new Date(new Date(lock + 'T00:00:00Z').getTime() + 864e5).toISOString().slice(0, 10); note += ` (paid ${date})`; }
+  await tx((client) => insertEntry(client, { entry_date: bookDate, type: 'in', amount, brand_id: brand.id, category_id: cat?.id || null,
+    account_id: acc?.id || null, party: pay.email || pay.contact || null, note, ref: pay.id, source: 'razorpay' }));
   return { recorded: true };
 }
 

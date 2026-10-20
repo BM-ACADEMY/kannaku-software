@@ -4,7 +4,9 @@ const bcrypt = require('bcryptjs');
 const { z } = require('zod');
 const { query } = require('../lib/db');
 const { ah, parse, HttpError } = require('../lib/http');
-const { requireRole } = require('../middleware/auth');
+const { requireRole, forgetUser } = require('../middleware/auth');
+const { accountBalances, clearLockCache } = require('../lib/books');
+const { sendEmail } = require('../lib/notify');
 const { audit } = require('../lib/audit');
 const { normaliseRules } = require('../lib/split');
 const integrations = require('../lib/integrations');
@@ -12,14 +14,16 @@ const razorpay = require('../lib/razorpay');
 const { grokChat } = require('../lib/ai');
 
 router.get('/bootstrap', ah(async (_req, res) => {
-  const [brands, categories, accounts, company, presets] = await Promise.all([
+  const [brands, categories, accounts, company, presets, bookCfg] = await Promise.all([
     query('SELECT * FROM brands ORDER BY sort_order, name'),
     query('SELECT * FROM categories WHERE active ORDER BY kind, name'),
     query('SELECT * FROM accounts WHERE active ORDER BY id'),
     query("SELECT value FROM settings WHERE key='company'"),
     query('SELECT * FROM split_presets WHERE active ORDER BY name'),
+    query("SELECT value FROM settings WHERE key='books'"),
   ]);
-  res.json({ brands: brands.rows, categories: categories.rows, accounts: accounts.rows, company: company.rows[0]?.value || {}, presets: presets.rows });
+  res.json({ brands: brands.rows, categories: categories.rows, accounts: accounts.rows, company: company.rows[0]?.value || {}, presets: presets.rows,
+    books: bookCfg.rows[0]?.value || {} });
 }));
 
 const brandSchema = z.object({
@@ -81,21 +85,27 @@ router.put('/presets/:id', requireRole('admin'), ah(async (req, res) => {
 }));
 
 // Payment accounts — where money sits (cash box, bank, UPI, gateway). Bootstrap only lists active ones.
-const accountSchema = z.object({ name: z.string().trim().min(1), kind: z.enum(['cash', 'bank', 'upi', 'gateway']), active: z.boolean().default(true) });
-router.get('/accounts', requireRole('admin'), ah(async (_req, res) => {
-  const { rows } = await query(`SELECT a.*, (SELECT COUNT(*)::int FROM entries e WHERE e.account_id=a.id AND e.deleted_at IS NULL) AS entry_count
-    FROM accounts a ORDER BY a.active DESC, a.id`);
-  res.json(rows);
+// Opening balance = what the account held on opening_date (e.g. 12 Sep 2026, the day Afra was incorporated)
+const accountSchema = z.object({ name: z.string().trim().min(1), kind: z.enum(['cash', 'bank', 'upi', 'gateway']), active: z.boolean().default(true),
+  opening_balance: z.coerce.number().default(0), opening_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default('2026-09-12') });
+router.get('/accounts', requireRole('admin', 'accounts'), ah(async (_req, res) => {
+  const bal = await accountBalances();
+  const { rows } = await query(`SELECT a.id, (SELECT COUNT(*)::int FROM entries e WHERE (e.account_id=a.id OR e.to_account_id=a.id) AND e.deleted_at IS NULL) AS entry_count
+    FROM accounts a`);
+  const counts = Object.fromEntries(rows.map((r) => [r.id, r.entry_count]));
+  res.json(bal.map((b) => ({ ...b, entry_count: counts[b.id] || 0 })));
 }));
 router.post('/accounts', requireRole('admin'), ah(async (req, res) => {
   const a = parse(accountSchema, req.body);
-  const { rows } = await query('INSERT INTO accounts (name,kind,active) VALUES ($1,$2,$3) RETURNING *', [a.name, a.kind, a.active]);
+  const { rows } = await query('INSERT INTO accounts (name,kind,active,opening_balance,opening_date) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+    [a.name, a.kind, a.active, a.opening_balance, a.opening_date]);
   await audit(req.user.id, 'create', 'account', rows[0].id, a);
   res.status(201).json(rows[0]);
 }));
 router.put('/accounts/:id', requireRole('admin'), ah(async (req, res) => {
   const a = parse(accountSchema, req.body);
-  const { rows } = await query('UPDATE accounts SET name=$1,kind=$2,active=$3 WHERE id=$4 RETURNING *', [a.name, a.kind, a.active, req.params.id]);
+  const { rows } = await query('UPDATE accounts SET name=$1,kind=$2,active=$3,opening_balance=$4,opening_date=$5 WHERE id=$6 RETURNING *',
+    [a.name, a.kind, a.active, a.opening_balance, a.opening_date, req.params.id]);
   if (!rows[0]) throw new HttpError(404, 'Account not found');
   await audit(req.user.id, 'update', 'account', rows[0].id, a);
   res.json(rows[0]);
@@ -148,6 +158,12 @@ router.post('/integrations/:group/test', requireRole('admin'), ah(async (req, re
       if (!r.webhook_secret) throw new Error('Save the Key ID + Key Secret (or a webhook secret) first');
       return res.json({ ok: true, message: 'Webhook secret saved. Razorpay checks it on every webhook — make a ₹1 test-mode payment to confirm.' });
     }
+    if (req.params.group === 'email') {
+      if (!cfg.email.host || !cfg.email.user || !cfg.email.pass) throw new Error('Server, username and password are all needed');
+      const r = await sendEmail(req.user.email, 'Kanakku test email', 'Email from Kanakku is working. Password reset links and alerts will arrive like this.');
+      if (!r.ok) throw new Error(r.error);
+      return res.json({ ok: true, message: `Test email sent to ${req.user.email}` });
+    }
     throw new HttpError(404, 'Unknown integration');
   } catch (err) {
     if (err instanceof HttpError) throw err;
@@ -184,31 +200,65 @@ router.put('/settings/company', requireRole('admin'), ah(async (req, res) => {
 
 // Users (admin only)
 router.get('/users', requireRole('admin'), ah(async (_req, res) => {
-  const { rows } = await query('SELECT id,name,email,phone,role,active,created_at FROM users ORDER BY id');
+  const { rows } = await query(`SELECT u.id,u.name,u.email,u.phone,u.role,u.active,u.created_at,u.totp_enabled,u.investor_id,i.name AS investor_name
+    FROM users u LEFT JOIN investors i ON i.id=u.investor_id ORDER BY u.id`);
   res.json(rows);
 }));
+const ROLES = ['admin', 'accounts', 'sales', 'investor'];
+async function checkInvestorLink(role, investorId) {
+  if (role !== 'investor') return null;
+  if (!investorId) throw new HttpError(400, 'Pick which investor this login is for');
+  const i = (await query('SELECT id FROM investors WHERE id=$1', [investorId])).rows[0];
+  if (!i) throw new HttpError(400, 'Investor not found');
+  return i.id;
+}
 router.post('/users', requireRole('admin'), ah(async (req, res) => {
   const u = parse(z.object({
     name: z.string().min(1), email: z.string().email(), phone: z.string().optional().nullable(),
-    role: z.enum(['admin', 'accounts', 'sales']), password: z.string().min(8),
+    role: z.enum(ROLES), password: z.string().min(8), investor_id: z.coerce.number().int().nullable().optional(),
   }), req.body);
-  const { rows } = await query(`INSERT INTO users (name,email,phone,role,password_hash) VALUES ($1,$2,$3,$4,$5)
-    RETURNING id,name,email,phone,role,active`, [u.name, u.email.toLowerCase(), u.phone || null, u.role, await bcrypt.hash(u.password, 10)]);
+  const investorId = await checkInvestorLink(u.role, u.investor_id);
+  const { rows } = await query(`INSERT INTO users (name,email,phone,role,password_hash,investor_id) VALUES ($1,$2,$3,$4,$5,$6)
+    RETURNING id,name,email,phone,role,active,investor_id`, [u.name, u.email.toLowerCase(), u.phone || null, u.role, await bcrypt.hash(u.password, 10), investorId]);
   await audit(req.user.id, 'create', 'user', rows[0].id, { email: u.email, role: u.role });
   res.status(201).json(rows[0]);
 }));
 router.put('/users/:id', requireRole('admin'), ah(async (req, res) => {
   const u = parse(z.object({
     name: z.string().min(1), phone: z.string().optional().nullable(),
-    role: z.enum(['admin', 'accounts', 'sales']), active: z.boolean(), password: z.string().min(8).optional(),
+    role: z.enum(ROLES), active: z.boolean(), password: z.string().min(8).optional(),
+    investor_id: z.coerce.number().int().nullable().optional(), reset_2fa: z.boolean().optional(),
   }), req.body);
   if (Number(req.params.id) === req.user.id && (!u.active || u.role !== 'admin')) throw new HttpError(400, 'You cannot remove your own admin access');
-  const { rows } = await query(`UPDATE users SET name=$1,phone=$2,role=$3,active=$4 WHERE id=$5
-    RETURNING id,name,email,phone,role,active`, [u.name, u.phone || null, u.role, u.active, req.params.id]);
-  if (!rows[0]) throw new HttpError(404, 'User not found');
+  const investorId = await checkInvestorLink(u.role, u.investor_id);
+  const before = (await query('SELECT active, role FROM users WHERE id=$1', [req.params.id])).rows[0];
+  if (!before) throw new HttpError(404, 'User not found');
+  // Deactivating, changing role or setting a password logs the person out on every device
+  const bump = !u.active || u.role !== before.role || !!u.password || !!u.reset_2fa;
+  const { rows } = await query(`UPDATE users SET name=$1,phone=$2,role=$3,active=$4,investor_id=$5,token_version=token_version+$6 WHERE id=$7
+    RETURNING id,name,email,phone,role,active,investor_id,totp_enabled`, [u.name, u.phone || null, u.role, u.active, investorId, bump ? 1 : 0, req.params.id]);
   if (u.password) await query('UPDATE users SET password_hash=$1 WHERE id=$2', [await bcrypt.hash(u.password, 10), req.params.id]);
-  await audit(req.user.id, 'update', 'user', rows[0].id, { role: u.role, active: u.active, ...(u.password ? { password_reset: true } : {}) });
+  if (u.reset_2fa) await query('UPDATE users SET totp_enabled=FALSE, totp_secret=NULL WHERE id=$1', [req.params.id]);
+  forgetUser(req.params.id);
+  await audit(req.user.id, 'update', 'user', rows[0].id, { role: u.role, active: u.active, ...(u.password ? { password_reset: true } : {}), ...(u.reset_2fa ? { reset_2fa: true } : {}) });
   res.json(rows[0]);
+}));
+
+// ── Books: month lock + security rules ──
+router.get('/settings/books', requireRole('admin', 'accounts'), ah(async (_req, res) => {
+  res.json((await query("SELECT value FROM settings WHERE key='books'")).rows[0]?.value || {});
+}));
+router.put('/settings/books', requireRole('admin'), ah(async (req, res) => {
+  const b = parse(z.object({
+    lock_until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    autolock_day: z.coerce.number().int().min(0).max(28).default(10),  // 0 = never lock automatically
+    require_admin_2fa: z.boolean().default(false),
+  }), req.body);
+  const cur = (await query("SELECT value FROM settings WHERE key='books'")).rows[0]?.value || {};
+  await query(`INSERT INTO settings (key,value) VALUES ('books',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify({ ...cur, ...b })]);
+  clearLockCache();
+  if ((cur.lock_until || null) !== b.lock_until) await audit(req.user.id, b.lock_until && (!cur.lock_until || b.lock_until > cur.lock_until) ? 'close_books' : 'reopen_books', 'settings', null, { from: cur.lock_until, to: b.lock_until });
+  res.json({ ...cur, ...b });
 }));
 
 module.exports = router;

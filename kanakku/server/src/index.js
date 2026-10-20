@@ -22,6 +22,8 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Webhooks need the raw body for signature checks — mount before express.json()
 app.use('/api/webhooks', require('./routes/webhooks'));
+// Bigger bodies only where needed: bank statements (CSV text) and bill photos (base64)
+app.use(['/api/attachments', '/api/bank'], express.json({ limit: '12mb' }));
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', async (_req, res) => {
@@ -31,9 +33,21 @@ app.get('/api/health', async (_req, res) => {
 
 // Brute-force guard on password checks only — /auth/me runs on every page load and must not count
 const passwordLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
-app.use(['/api/auth/login', '/api/auth/change-password'], passwordLimit);
+app.use(['/api/auth/login', '/api/auth/login/otp', '/api/auth/change-password', '/api/auth/2fa/disable'], passwordLimit);
+// Forgot / reset: stricter — stops anyone flooding inboxes or guessing links
+app.use(['/api/auth/forgot', '/api/auth/reset'], rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/internal', requireInternalKey, require('./routes/internal'));
+// Investor logins see only their own statement (+ brand names) — everything else is staff-only
+app.use('/api', requireAuth, (req, _res, next) => {
+  if (req.user.role !== 'investor' || req.path === '/bootstrap' || req.path.startsWith('/portal/')) return next();
+  next(new HttpError(403, 'You do not have access to this'));
+});
+app.use('/api/portal', requireAuth, require('./routes/portal'));
+app.use('/api/bank', requireAuth, require('./routes/bank'));
+app.use('/api/recurring', requireAuth, require('./routes/recurring'));
+app.use('/api/attachments', requireAuth, require('./routes/attachments'));
+app.use('/api/autopilot', requireAuth, require('./routes/autopilot'));
 app.use('/api', requireAuth, require('./routes/meta'));
 app.use('/api/entries', requireAuth, require('./routes/entries'));
 app.use('/api/deals', requireAuth, require('./routes/deals'));
@@ -63,3 +77,6 @@ app.use((err, _req, res, _next) => {
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () => console.log(`Kanakku API on :${port}`));
 require('./lib/razorpay').startAutoSync(); // pulls Razorpay payments every 5 min when Key ID + Secret are saved
+require('./lib/autopilot').start();         // daily jobs: recurring, reminders, briefs, statements, month close, alerts
+require('./lib/integrations').reencryptAll().then((n) => n && console.log(`[secrets] re-saved ${n} key(s) with INTEGRATIONS_KEY`)).catch(() => {});
+if (!process.env.INTEGRATIONS_KEY) console.warn('[secrets] INTEGRATIONS_KEY is not set — saved keys are tied to JWT_SECRET. Run ./kanakku.sh update to add one.');

@@ -8,13 +8,15 @@ Dada's Kitchen, Velai Vaaippu, EduConsultants, ThePlotOne, Nera, GymDesk and Hea
 |---|---|
 | **Home** | Today's in/out, month net, money to collect and to pay, brand bars, latest entries |
 | **Book** | Daily cash in/out per brand. Type a Tanglish note ("techx 5k vanthuchu ravi gpay") and it fills the entry for you. Office bills (EB, rent, internet) split across brands by a saved rule so each brand carries its own costs |
-| **Deals** | Customers → quotation → invoice → payment. GST worked out automatically (CGST+SGST inside Puducherry, IGST outside). Print/PDF and WhatsApp share |
+| **Deals** | Quotation → invoice → payment (with TDS) → credit note → refund; vendor purchase bills with GST input credit. GST worked out automatically. Print/PDF, WhatsApp share, bill photos |
 | **Dues** | Unpaid invoices appear by themselves; add other receivables/payables by hand; one-tap WhatsApp reminder; settle → posts to Book |
 | **Investors** | Profit-share (no interest). Own % per brand per investor, changes dated so past months never move, pooled or per-brand loss rule, capital tranches, accruals, payouts, monthly statement |
-| **P&L** | Profit & loss by brand and category with monthly trend + CSV; GST sales register for the CA |
-| **Settings** | Company details on invoices, brands (code, colour, investor pool), categories, users & roles |
+| **Reports** | P&L by brand (GST kept out, TDS counted), budget vs actual, 30/60/90-day cash forecast, GSTR-1 + GSTR-3B sheet for the CA, TDS register |
+| **Money** | Live balance per account, bank statement import with auto-matching, and auto rules that sort lines by themselves |
+| **Autopilot** | Daily jobs inside the app: recurring entries, reminders, Monday brief, investor statements, month close, alerts — with a log |
+| **Settings** | Company details on invoices, brands, split rules, categories, accounts & opening balances, books lock, 2-step login, integrations (AI, Razorpay, WhatsApp, email), users & roles (incl. investor logins) |
 
-Automations (n8n): daily WhatsApp due reminders · Monday CFO brief to admins · monthly investor statement.
+Autopilot runs inside the app (no n8n needed): reminders, Monday brief, investor statements, recurring entries, month close, alerts. **Upgrading from v1? Read docs/UPGRADE_v2.md.**
 Razorpay webhook: captured payments land in the Book automatically and close the matching invoice.
 
 ## Stack
@@ -47,7 +49,9 @@ Open the address it prints and log in.
 | `./kanakku.sh backup` / `restore FILE` | backup now / restore one |
 | `./kanakku.sh smoke` | end-to-end test (creates sample records) |
 | `./kanakku.sh reset-pass` | new password for any user |
-| `./kanakku.sh n8n-import` | re-import the automation workflows |
+| `./kanakku.sh n8n-import` | re-import the old n8n workflows (optional — Autopilot replaces them) |
+| `./kanakku.sh test` | automatic money-logic tests + full book-keeping run on a throwaway database |
+| `./kanakku.sh offsite-setup` | copy backups to Google Drive every 6 hours |
 
 ### Developing without Docker
 ```bash
@@ -63,5 +67,6 @@ web/      React UI — src/pages (one file per tab), src/components/ui.jsx, src/
 n8n/      workflows/ (3 importable workflows) + WHATSAPP_TEMPLATES.md
 kanakku.sh  install / update / backup / restore / logs in one script
 deploy/   nginx.conf
-docs/     DEV_GUIDE.md (build/deploy/API), USER_GUIDE.md (for the team), BUILD_PLAN.md (timeline + acceptance tests)
+docs/     UPGRADE_v2.md (what changed in v2 + upgrade steps), DEV_GUIDE.md (rules/deploy/API), USER_GUIDE.md (for the team), BUILD_PLAN.md (acceptance tests)
+server/test/  npm test — money logic + full database run
 ```

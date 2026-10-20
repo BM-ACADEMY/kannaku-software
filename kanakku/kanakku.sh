@@ -11,6 +11,8 @@
 #    ./kanakku.sh n8n-import  (re)import the WhatsApp automation workflows
 #    ./kanakku.sh smoke       end-to-end test against the running app
 #    ./kanakku.sh reset-pass  set a new password for a user
+#    ./kanakku.sh offsite-setup  copy backups to Google Drive (or any cloud) every 6 hours
+#    ./kanakku.sh test        run the automatic money-logic tests inside the app container
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -105,6 +107,8 @@ install() {
   set_env server/.env ADMIN_EMAIL "$ADMIN_EMAIL"
   set_env server/.env ADMIN_PASSWORD "$ADMIN_PASSWORD"
   set_env server/.env INTERNAL_API_KEY "$INTERNAL"
+  set_env server/.env INTEGRATIONS_KEY "$(rand 32)"
+  set_env server/.env APP_URL "$APP_URL"
   set_env server/.env XAI_API_KEY "$XAI_KEY"
   set_env server/.env RAZORPAY_WEBHOOK_SECRET "$RZP"
   chmod 600 .env server/.env
@@ -150,8 +154,17 @@ setup_https() {
   fi
 }
 
+ensure_keys() {
+  # Older installs: saved Razorpay/WhatsApp/AI keys were locked with JWT_SECRET. Give them their own key;
+  # the app re-saves them with it on the next start, so nothing has to be typed again.
+  if [ -f server/.env ] && [ -z "$(get_env server/.env INTEGRATIONS_KEY)" ]; then
+    set_env server/.env INTEGRATIONS_KEY "$(rand 32)"; say "Added INTEGRATIONS_KEY to server/.env"
+  fi
+}
+
 update() {
   need_docker
+  ensure_keys
   if [ -d .git ]; then say "Pulling latest code…"; git pull --ff-only || warn "git pull failed — continuing with local code"; fi
   say "Taking a safety backup first…"; backup || warn "Backup skipped (database not running yet)"
   say "Rebuilding and restarting…"
@@ -210,6 +223,26 @@ reset_pass() {
      .then(r=>{console.log(r.rowCount?'✓ Password changed':'✗ No user with that email');process.exit(0)})"
 }
 
+offsite_setup() {
+  need_docker
+  mkdir -p deploy/rclone
+  echo -e "\n${B}Off-site backups${N} — rclone will ask a few questions."
+  echo "  For Google Drive: choose 'n' (new remote) → name it ${B}gdrive${N} → storage ${B}drive${N} → leave client id/secret blank"
+  echo "  → scope 1 (full access) → on a server with no browser, answer 'n' to auto config and follow the link it prints."
+  docker run --rm -it -v "$PWD/deploy/rclone:/config/rclone" rclone/rclone:1.68 config
+  read -rp "Remote and folder to copy to [gdrive:kanakku-backups]: " RR; RR=${RR:-gdrive:kanakku-backups}
+  set_env .env RCLONE_REMOTE "$RR"
+  set_env .env COMPOSE_PROFILES offsite
+  dc --profile offsite up -d offsite
+  say "Testing one copy now…"
+  docker run --rm -v "$PWD/deploy/rclone:/config/rclone" -v "$PWD/backups:/backups:ro" rclone/rclone:1.68 copy /backups "$RR" --include 'kanakku_*.sql.gz' --max-age 3d \
+    && say "✓ Backups now also go to $RR every 6 hours." || warn "Copy failed — run ./kanakku.sh offsite-setup again and check the remote name."
+}
+
+run_tests() {
+  dc exec -T app sh -c 'cd /app/server && node --test test/*.test.js'
+}
+
 case "${1:-install}" in
   install) install ;;
   update) update ;;
@@ -220,5 +253,7 @@ case "${1:-install}" in
   n8n-import) n8n_import ;;
   smoke) smoke ;;
   reset-pass) reset_pass ;;
-  *) sed -n '3,14p' "$0" ;;
+  offsite-setup) offsite_setup ;;
+  test) run_tests ;;
+  *) sed -n '3,16p' "$0" ;;
 esac

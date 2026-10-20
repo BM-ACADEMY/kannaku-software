@@ -6,6 +6,7 @@ const { ah, parse, HttpError } = require('../lib/http');
 const { requireRole } = require('../middleware/auth');
 const { investorStatement } = require('../lib/reports');
 const { audit } = require('../lib/audit');
+const { insertEntry, commonBrandId } = require('../lib/ledger');
 
 router.use(requireRole('admin', 'accounts'));
 
@@ -74,27 +75,42 @@ router.put('/:id', requireRole('admin'), ah(async (req, res) => {
   res.json(row);
 }));
 
+// Capital received — also posts an "Investor capital" money-in entry, so the bank balance is right.
+// It is not income: the category is outside P&L.
 router.post('/:id/contributions', requireRole('admin'), ah(async (req, res) => {
-  const c = parse(z.object({ amount: z.coerce.number().positive(), received_on: z.string(), mode: z.string().nullable().optional(), note: z.string().nullable().optional() }), req.body);
-  const { rows } = await query(`INSERT INTO investor_contributions (investor_id,amount,received_on,mode,note) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [req.params.id, c.amount, c.received_on, c.mode || null, c.note || null]);
-  await audit(req.user.id, 'contribution', 'investor', Number(req.params.id), c);
-  res.status(201).json(rows[0]);
+  const c = parse(z.object({ amount: z.coerce.number().positive(), received_on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    mode: z.string().nullable().optional(), note: z.string().nullable().optional(), account_id: z.coerce.number().nullable().optional(),
+    post_to_book: z.boolean().default(true) }), req.body);
+  const out = await tx(async (client) => {
+    const inv = (await client.query('SELECT name FROM investors WHERE id=$1', [req.params.id])).rows[0];
+    if (!inv) throw new HttpError(404, 'Investor not found');
+    const r = await client.query(`INSERT INTO investor_contributions (investor_id,amount,received_on,mode,note) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.params.id, c.amount, c.received_on, c.mode || null, c.note || null]);
+    if (c.post_to_book) {
+      const cat = (await client.query("SELECT id FROM categories WHERE name='Investor capital' AND kind='in'")).rows[0];
+      await insertEntry(client, { entry_date: c.received_on, type: 'in', amount: c.amount, brand_id: (await commonBrandId(client)),
+        category_id: cat?.id || null, account_id: c.account_id || null, party: inv.name, note: `Capital received${c.note ? ': ' + c.note : ''}`,
+        source: 'investor', created_by: req.user.id });
+    }
+    await audit(req.user.id, 'contribution', 'investor', Number(req.params.id), c, client);
+    return r.rows[0];
+  });
+  res.status(201).json(out);
 }));
 
-// Record a payout — also posts an "Investor payout" out-entry to the Book (Head Office)
+// Record a payout — also posts an "Investor payout" out-entry (outside P&L: it's a share of profit, not a cost)
 router.post('/:id/payouts', requireRole('admin'), ah(async (req, res) => {
-  const p = parse(z.object({ period: z.string().regex(/^\d{4}-\d{2}$/), amount: z.coerce.number().positive(), paid_on: z.string(),
+  const p = parse(z.object({ period: z.string().regex(/^\d{4}-\d{2}$/), amount: z.coerce.number().positive(), paid_on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     account_id: z.coerce.number().nullable().optional(), note: z.string().nullable().optional() }), req.body);
   const out = await tx(async (client) => {
     const inv = (await client.query('SELECT name FROM investors WHERE id=$1', [req.params.id])).rows[0];
     if (!inv) throw new HttpError(404, 'Investor not found');
     const r = await client.query(`INSERT INTO investor_payouts (investor_id,period,amount,paid_on,note) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
       [req.params.id, p.period, p.amount, p.paid_on, p.note || null]);
-    const ho = (await client.query("SELECT id FROM brands WHERE code='HO'")).rows[0];
     const cat = (await client.query("SELECT id FROM categories WHERE name='Investor payout' AND kind='out'")).rows[0];
-    if (ho) await client.query(`INSERT INTO entries (entry_date,brand_id,type,amount,category_id,account_id,party,note,created_by)
-      VALUES ($1,$2,'out',$3,$4,$5,$6,$7,$8)`, [p.paid_on, ho.id, p.amount, cat?.id || null, p.account_id || null, inv.name, `Profit share for ${p.period}`, req.user.id]);
+    await insertEntry(client, { entry_date: p.paid_on, type: 'out', amount: p.amount, brand_id: (await commonBrandId(client)),
+      category_id: cat?.id || null, account_id: p.account_id || null, party: inv.name, note: `Profit share for ${p.period}`,
+      source: 'investor', created_by: req.user.id });
     await audit(req.user.id, 'payout', 'investor', Number(req.params.id), p, client);
     return r.rows[0];
   });

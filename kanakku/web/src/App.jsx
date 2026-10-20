@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, getToken, setToken } from './lib/api.js';
 import { AppCtx, Avatar, Err, Field, Icon, Loader, Modal, TopProgress } from './components/ui.jsx';
-import Login from './pages/Login.jsx';
+import Login, { ResetPassword } from './pages/Login.jsx';
+import Money from './pages/Money.jsx';
+import Autopilot from './pages/Autopilot.jsx';
+import Portal from './pages/Portal.jsx';
+import TwoStep from './components/TwoStep.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Book from './pages/Book.jsx';
 import Deals from './pages/Deals.jsx';
@@ -15,9 +19,12 @@ const PAGES = [
   { key: 'book', label: 'Book', icon: Icon.book, el: Book, roles: ['admin', 'accounts'], group: 'Daily' },
   { key: 'deals', label: 'Deals', icon: Icon.deals, el: Deals, roles: ['admin', 'accounts', 'sales'], group: 'Daily' },
   { key: 'dues', label: 'Dues', icon: Icon.dues, el: Dues, roles: ['admin', 'accounts', 'sales'], group: 'Daily' },
+  { key: 'money', label: 'Money', icon: Icon.wallet, el: Money, roles: ['admin', 'accounts'], group: 'Finance' },
   { key: 'investors', label: 'Investors', icon: Icon.investors, el: Investors, roles: ['admin', 'accounts'], group: 'Finance' },
-  { key: 'reports', label: 'P&L', icon: Icon.reports, el: Reports, roles: ['admin', 'accounts'], group: 'Finance' },
+  { key: 'reports', label: 'Reports', icon: Icon.reports, el: Reports, roles: ['admin', 'accounts'], group: 'Finance' },
+  { key: 'autopilot', label: 'Autopilot', icon: Icon.spark, el: Autopilot, roles: ['admin', 'accounts'], group: 'Admin' },
   { key: 'settings', label: 'Settings', icon: Icon.settings, el: Settings, roles: ['admin'], group: 'Admin' },
+  { key: 'portal', label: 'My statement', icon: Icon.investors, el: Portal, roles: ['investor'], group: 'Investor' },
 ];
 
 function ChangePassword({ onClose, onDone }) {
@@ -29,7 +36,7 @@ function ChangePassword({ onClose, onDone }) {
   const ok = p.current && p.next.length >= 8 && p.next === p.again;
   const save = async () => {
     setSaving(true); setError('');
-    try { await api('/auth/change-password', { method: 'POST', body: { current: p.current, next: p.next } }); onDone(); } catch (e) { setError(e.message); setSaving(false); }
+    try { const r = await api('/auth/change-password', { method: 'POST', body: { current: p.current, next: p.next } }); if (r.token) setToken(r.token); onDone(); } catch (e) { setError(e.message); setSaving(false); }
   };
   return (
     <Modal title="Change password" onClose={onClose}
@@ -54,6 +61,7 @@ export default function App() {
   }, []);
   const [toast, setToast] = useState('');
   const [pwOpen, setPwOpen] = useState(false);
+  const [twoStep, setTwoStep] = useState(null); // null | { required }
   const [menu, setMenu] = useState(null); // which account menu is open: 'side' | 'top' | null
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem('side-collapsed') === '1'; } catch { return false; } });
   const toggleCollapsed = () => setCollapsed((c) => { try { localStorage.setItem('side-collapsed', c ? '0' : '1'); } catch { /* ignore */ } return !c; });
@@ -63,7 +71,7 @@ export default function App() {
 
   useEffect(() => {
     if (!getToken()) return;
-    api('/auth/me').then((r) => { setUser(r.user); return loadBoot(); }).catch(() => setToken(null)).finally(() => setChecking(false));
+    api('/auth/me').then((r) => { setUser(r.user); if (r.must_setup_2fa) setTwoStep({ required: true }); return loadBoot(); }).catch(() => setToken(null)).finally(() => setChecking(false));
   }, [loadBoot]);
 
   useEffect(() => {
@@ -88,8 +96,9 @@ export default function App() {
     if (current && (window.location.pathname !== `/${current.key}` || window.location.hash)) window.history.replaceState(null, '', `/${current.key}`);
   }, [current]);
 
+  if (window.location.pathname === '/reset') return <ResetPassword />;
   if (checking) return <Loader full label="Opening Kanakku…" />;
-  if (!user) return <Login onLogin={(u) => { setUser(u); loadBoot(); }} />;
+  if (!user) return <Login onLogin={(u, must2fa) => { setUser(u); if (must2fa) setTwoStep({ required: true }); loadBoot(); }} />;
   if (!boot) return <Loader full label="Loading your books…" />;
 
   const Page = current.el;
@@ -106,6 +115,8 @@ export default function App() {
         <div className="menu-label">Signed in as <span className={`role-badge ${user.role}`}>{user.role}</span></div>
         <div className="menu-sep" />
         <button role="menuitem" onClick={() => { setMenu(null); setPwOpen(true); }}>{Icon.key}Change password</button>
+        <button role="menuitem" onClick={() => { setMenu(null); setTwoStep({ required: false }); }}>{Icon.key}2-step login {user.totp_enabled ? '(on)' : '(off)'}</button>
+        <button role="menuitem" onClick={async () => { setMenu(null); if (window.confirm('Log out on every phone and computer (including this one)?')) { await api('/auth/logout-all', { method: 'POST' }); setToken(null); window.location.replace('/'); } }}>{Icon.logout}Log out everywhere</button>
         <div className="menu-sep" />
         <button role="menuitem" className="danger" onClick={() => { setToken(null); window.location.replace('/'); }}>{Icon.logout}Log out</button>
       </div>
@@ -158,6 +169,8 @@ export default function App() {
           <main className="main"><Page /></main>
         </div>
       </div>
+      {twoStep && <TwoStep enabled={!!user.totp_enabled} required={twoStep.required && !user.totp_enabled} onClose={() => setTwoStep(null)}
+        onChanged={(on) => { setUser({ ...user, totp_enabled: on }); setTwoStep(null); }} />}
       {pwOpen && <ChangePassword onClose={() => setPwOpen(false)} onDone={() => { setPwOpen(false); setToast('Password changed'); }} />}
       {toast && <div className="toast">{toast}</div>}
     </AppCtx.Provider>

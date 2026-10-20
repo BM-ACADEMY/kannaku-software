@@ -1,11 +1,13 @@
 // Dues — money to collect (receivable) and money to pay (payable)
-// Unpaid invoices appear automatically as receivables; manual dues cover everything else.
+// Unpaid invoices appear automatically as receivables; unpaid purchase bills and refunds owed on credit notes
+// appear as payables. Manual dues cover everything else (advances, loans, deposits).
 const router = require('express').Router();
 const { z } = require('zod');
 const { query, tx } = require('../lib/db');
 const { ah, parse, HttpError } = require('../lib/http');
 const { requireRole } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
+const { insertEntry } = require('../lib/ledger');
 
 const dueSchema = z.object({
   brand_id: z.coerce.number().int(), direction: z.enum(['receivable', 'payable']),
@@ -19,13 +21,21 @@ router.get('/', ah(async (req, res) => {
       (d.amount - d.amount_settled) AS balance
     FROM dues d JOIN brands b ON b.id=d.brand_id WHERE ($1::text IS NULL OR d.status=$1) AND d.document_id IS NULL
     ORDER BY d.due_date NULLS LAST, d.id`, [status]);
-  const invoices = await query(`SELECT d.id AS document_id, 'invoice' AS origin, 'receivable' AS direction, d.number, c.name AS party, c.phone,
-      d.total AS amount, d.amount_paid AS amount_settled, (d.total - d.amount_paid) AS balance, d.due_date, d.brand_id,
+  const docs = await query(`SELECT d.id AS document_id, d.doc_type,
+      CASE WHEN d.doc_type='invoice' THEN 'invoice' WHEN d.doc_type='bill' THEN 'bill' ELSE 'refund' END AS origin,
+      CASE WHEN d.doc_type='invoice' THEN 'receivable' ELSE 'payable' END AS direction,
+      COALESCE(d.number || CASE WHEN d.vendor_ref IS NOT NULL THEN ' (' || d.vendor_ref || ')' ELSE '' END, d.number) AS number,
+      c.name AS party, c.phone, d.total AS amount,
+      CASE WHEN d.doc_type='credit_note' THEN d.amount_paid + d.amount_credited ELSE d.amount_paid + d.amount_credited END AS amount_settled,
+      (d.total - d.amount_paid - d.amount_credited) AS balance, d.due_date, d.brand_id,
       b.name AS brand_name, b.code AS brand_code, b.color AS brand_color,
-      CASE WHEN d.status IN ('unpaid','partial') THEN 'open' ELSE 'settled' END AS status
+      CASE WHEN d.total - d.amount_paid - d.amount_credited > 0.009 THEN 'open' ELSE 'settled' END AS status
     FROM documents d JOIN brands b ON b.id=d.brand_id JOIN customers c ON c.id=d.customer_id
-    WHERE d.doc_type='invoice' AND d.status <> 'cancelled' AND ($1::text IS NULL OR d.status IN ('unpaid','partial'))
-    ORDER BY d.due_date NULLS LAST`, [status]);
+    WHERE d.doc_type IN ('invoice','bill','credit_note') AND d.status <> 'cancelled'
+      AND ($1::text IS NULL OR d.total - d.amount_paid - d.amount_credited > 0.009)
+      AND ($2 OR d.doc_type <> 'bill')
+    ORDER BY d.due_date NULLS LAST`, [status, req.user.role !== 'sales']);
+  const invoices = docs;
   const rows = [...invoices.rows, ...manual.rows];
   const sum = (dir) => rows.filter((r) => r.direction === dir && r.status === 'open').reduce((s, r) => s + Number(r.balance), 0);
   res.json({ rows, totals: { receivable: sum('receivable'), payable: sum('payable') } });
@@ -57,9 +67,9 @@ router.post('/:id/settle', requireRole('admin', 'accounts'), ah(async (req, res)
     if (!due || due.status !== 'open') throw new HttpError(400, 'Due not open');
     const balance = Number(due.amount) - Number(due.amount_settled);
     if (p.amount > balance + 0.01) throw new HttpError(400, `More than the balance (₹${balance})`);
-    await client.query(`INSERT INTO entries (entry_date,brand_id,type,amount,category_id,account_id,party,note,ref,created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [p.paid_on, due.brand_id, due.direction === 'receivable' ? 'in' : 'out', p.amount,
-      p.category_id || null, p.account_id || null, due.party, `Due settled${due.note ? ': ' + due.note : ''}`, p.ref || null, req.user.id]);
+    await insertEntry(client, { entry_date: p.paid_on, brand_id: due.brand_id, type: due.direction === 'receivable' ? 'in' : 'out', amount: p.amount,
+      category_id: p.category_id || null, account_id: p.account_id || null, party: due.party, note: `Due settled${due.note ? ': ' + due.note : ''}`,
+      ref: p.ref || null, created_by: req.user.id });
     const settled = Number(due.amount_settled) + p.amount;
     const r = await client.query('UPDATE dues SET amount_settled=$1, status=$2 WHERE id=$3 RETURNING *',
       [settled, settled >= Number(due.amount) - 0.01 ? 'settled' : 'open', due.id]);

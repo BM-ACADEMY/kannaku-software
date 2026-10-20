@@ -22,7 +22,8 @@ export async function api(path, { method = 'GET', body } = {}) {
     });
     data = await res.json().catch(() => ({}));
   } finally { setBusy(-1); }
-  if (res.status === 401 && path !== '/auth/login') {
+  // Login/forgot/reset answer 401 for a wrong password or code — that's an error to show, not a logout
+  if (res.status === 401 && !path.startsWith('/auth/')) {
     setToken(null);
     window.location.reload();
   }
@@ -37,3 +38,26 @@ export const qs = (o) => {
   const p = Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== '');
   return p.length ? `?${new URLSearchParams(p).toString()}` : '';
 };
+
+// Download something that needs the login token (bill photos): returns a temporary object URL
+export async function apiBlobUrl(path) {
+  const res = await fetch(`${API_BASE}/api${path}`, { headers: getToken() ? { authorization: `Bearer ${getToken()}` } : {} });
+  if (!res.ok) throw new Error('Could not open the file');
+  return URL.createObjectURL(await res.blob());
+}
+
+// Read a picked file as base64 (for uploads) — shrinks big phone photos first so uploads stay quick
+export async function fileToUpload(file, maxSide = 1800) {
+  if (file.type.startsWith('image/') && file.type !== 'image/heic' && file.size > 600 * 1024) {
+    try {
+      const bmp = await createImageBitmap(file);
+      const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const data = c.toDataURL('image/jpeg', 0.82);
+      return { filename: file.name.replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', data };
+    } catch { /* fall back to the original file */ }
+  }
+  const data = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r.readAsDataURL(file); });
+  return { filename: file.name, mime: file.type || 'application/octet-stream', data };
+}

@@ -2,7 +2,8 @@ const { query } = require('./db');
 
 // Profit & loss for a date range, optionally limited to some brands.
 // Reads entry_lines (view): shared costs are already split onto brands.
-// Investor payouts are a distribution of profit, not an expense — excluded.
+// Uses pnl_amount: GST taken out, customer TDS added back. Categories with in_pnl=false
+// (investor capital/payouts, GST paid to govt, loans) and transfers are not profit or loss.
 // excludeShared: leave out split shared costs (used for investors who agreed to that).
 async function pnl({ from, to, brandIds, excludeShared = false }) {
   const p = [from, to];
@@ -11,14 +12,14 @@ async function pnl({ from, to, brandIds, excludeShared = false }) {
   if (excludeShared) extra += ' AND NOT l.shared';
   const base = `FROM entry_lines l LEFT JOIN categories c ON c.id=l.category_id
     WHERE l.deleted_at IS NULL AND l.entry_date BETWEEN $1 AND $2 ${extra}
-    AND COALESCE(c.name,'') <> 'Investor payout'`;
+    AND COALESCE(c.in_pnl, TRUE)`;
   const byBrand = await query(`SELECT b.id AS brand_id, b.name AS brand_name, b.code AS brand_code, b.color AS brand_color,
-      COALESCE(SUM(l.amount) FILTER (WHERE l.type='in'),0) AS income,
-      COALESCE(SUM(l.amount) FILTER (WHERE l.type='out'),0) AS expense,
-      COALESCE(SUM(l.amount) FILTER (WHERE l.type='out' AND l.shared),0) AS shared_expense
+      COALESCE(SUM(l.pnl_amount) FILTER (WHERE l.type='in'),0) AS income,
+      COALESCE(SUM(l.pnl_amount) FILTER (WHERE l.type='out'),0) AS expense,
+      COALESCE(SUM(l.pnl_amount) FILTER (WHERE l.type='out' AND l.shared),0) AS shared_expense
     ${base.replace('FROM entry_lines l', 'FROM entry_lines l JOIN brands b ON b.id=l.brand_id')}
     GROUP BY b.id ORDER BY b.sort_order`, p);
-  const byCategory = await query(`SELECT l.type, COALESCE(c.name,'Uncategorised') AS category, SUM(l.amount) AS total
+  const byCategory = await query(`SELECT l.type, COALESCE(c.name,'Uncategorised') AS category, SUM(l.pnl_amount) AS total
     ${base} GROUP BY l.type, c.name ORDER BY l.type, total DESC`, p);
   const brands = byBrand.rows.map((r) => ({ ...r, net: r.income - r.expense }));
   const income = brands.reduce((s, r) => s + r.income, 0);

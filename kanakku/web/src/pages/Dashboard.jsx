@@ -17,12 +17,24 @@ export default function Dashboard() {
         <div><h1>Vanakkam, {user.name.split(' ')[0]}</h1><p>{fmtDate(today())} · Afra Ventures</p></div>
       </div>
 
+      {m && (data.pending_count > 0 || data.unmatched_bank > 0) && (
+        <div className="banner info">
+          <span>{[data.pending_count > 0 && `${data.pending_count} entr${data.pending_count === 1 ? 'y' : 'ies'} from autopilot waiting to be confirmed`,
+            data.unmatched_bank > 0 && `${data.unmatched_bank} bank line${data.unmatched_bank === 1 ? '' : 's'} not sorted`].filter(Boolean).join(' · ')}</span>
+          {data.pending_count > 0 && <button className="btn sm" onClick={() => go('book')}>Open Book</button>}
+          {data.unmatched_bank > 0 && <button className="btn sm" style={{ marginLeft: data.pending_count ? 0 : 'auto' }} onClick={() => go('money')}>Sort bank</button>}
+        </div>
+      )}
+      {m && data.forecast?.runs_out_on && (
+        <div className="banner bad">Cash may run short on {fmtDate(data.forecast.runs_out_on)} (lowest {inr(data.forecast.low.balance)}).<button className="btn sm" onClick={() => go('reports')}>See forecast</button></div>
+      )}
       {m ? (
         <div className="grid g4" style={{ marginBottom: 14 }}>
-          <Stat label="Today in / out" value={<><span className="in">{inr(data.today.income)}</span> <span className="muted" style={{ fontWeight: 400 }}>/</span> <span className="out">{inr(data.today.expense)}</span></>} />
+          <Stat label="Money in accounts" value={inr(data.cash_total)} tone={data.cash_total < 0 ? 'out' : ''}
+            hint={data.forecast ? `In 30 days: ${inr(data.forecast.end_balance)}` : `${data.balances?.length || 0} accounts`} />
           <Stat label={`${fmtMonth(today().slice(0, 7))} net`} value={inr(m.net)} tone={m.net >= 0 ? 'in' : 'out'} hint={`In ${inr(m.income)} · Out ${inr(m.expense)}`} />
           <Stat label="To collect" value={inr(data.receivable)} hint={data.overdue_invoices ? `${data.overdue_invoices} invoice${data.overdue_invoices > 1 ? 's' : ''} overdue` : 'Nothing overdue'} />
-          <Stat label="To pay" value={inr(data.payable)} hint="Open payables" />
+          <Stat label="To pay" value={inr(data.payable)} hint={`Today: in ${inr(data.today.income)} · out ${inr(data.today.expense)}`} />
         </div>
       ) : (
         <div className="grid g2" style={{ marginBottom: 14 }}>

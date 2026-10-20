@@ -1,33 +1,51 @@
-// Deals — customers, quotations, invoices (quote → invoice → GST → payment)
+// Deals — customers & vendors, quotations, invoices, credit notes, purchase bills.
+//   quote → invoice → payment (with TDS) → credit note → refund
+//   bill (vendor) → payment, GST claimed as input credit
+// Money rules: a payment's GST share and TDS are stored on the Book entry, so P&L and investor share never count GST as income.
 const router = require('express').Router();
 const { z } = require('zod');
 const { query, tx } = require('../lib/db');
 const { ah, parse, HttpError } = require('../lib/http');
 const { requireRole } = require('../middleware/auth');
-const { computeTotals, fyCode, round2 } = require('../lib/gst');
+const { computeTotals, fyCode, round2, checkGstin } = require('../lib/gst');
 const { audit } = require('../lib/audit');
+const { assertOpen, gstShare, docBalance } = require('../lib/books');
+const { insertEntry } = require('../lib/ledger');
 
-// ── Customers ──
+const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const TAGS = { quote: 'QT', invoice: 'INV', credit_note: 'CN', bill: 'BILL' };
+const money = ['admin', 'accounts'];
+
+// ── Customers & vendors ──
 const customerSchema = z.object({
   name: z.string().min(1), phone: z.string().nullable().optional(), email: z.string().nullable().optional(),
   gstin: z.string().max(15).nullable().optional(), state_code: z.string().default('34'), address: z.string().nullable().optional(),
+  kind: z.enum(['customer', 'vendor', 'both']).default('customer'),
+  tds_rate: z.coerce.number().min(0).max(30).default(0),
 });
+function cleanParty(c) {
+  const g = checkGstin(c.gstin);
+  if (!g.ok) throw new HttpError(400, g.error);
+  // GSTIN decides the state for place of supply
+  return { ...c, gstin: g.gstin, state_code: g.state_code || c.state_code };
+}
 router.get('/customers', ah(async (req, res) => {
   const q = req.query.q ? `%${req.query.q}%` : '%';
-  const { rows } = await query('SELECT * FROM customers WHERE name ILIKE $1 OR phone ILIKE $1 ORDER BY name LIMIT 200', [q]);
+  const kind = req.query.kind === 'vendor' ? "kind IN ('vendor','both')" : req.query.kind === 'customer' ? "kind IN ('customer','both')" : 'TRUE';
+  const { rows } = await query(`SELECT * FROM customers WHERE (name ILIKE $1 OR phone ILIKE $1 OR gstin ILIKE $1) AND ${kind} ORDER BY name LIMIT 300`, [q]);
   res.json(rows);
 }));
 router.post('/customers', ah(async (req, res) => {
-  const c = parse(customerSchema, req.body);
-  const { rows } = await query(`INSERT INTO customers (name,phone,email,gstin,state_code,address) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [c.name, c.phone || null, c.email || null, c.gstin ? c.gstin.toUpperCase() : null, c.state_code, c.address || null]);
+  const c = cleanParty(parse(customerSchema, req.body));
+  const { rows } = await query(`INSERT INTO customers (name,phone,email,gstin,state_code,address,kind,tds_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [c.name, c.phone || null, c.email || null, c.gstin, c.state_code, c.address || null, c.kind, c.tds_rate]);
   res.status(201).json(rows[0]);
 }));
 router.put('/customers/:id', ah(async (req, res) => {
-  const c = parse(customerSchema, req.body);
-  const { rows } = await query(`UPDATE customers SET name=$1,phone=$2,email=$3,gstin=$4,state_code=$5,address=$6 WHERE id=$7 RETURNING *`,
-    [c.name, c.phone || null, c.email || null, c.gstin ? c.gstin.toUpperCase() : null, c.state_code, c.address || null, req.params.id]);
-  if (!rows[0]) throw new HttpError(404, 'Customer not found');
+  const c = cleanParty(parse(customerSchema, req.body));
+  const { rows } = await query(`UPDATE customers SET name=$1,phone=$2,email=$3,gstin=$4,state_code=$5,address=$6,kind=$7,tds_rate=$8 WHERE id=$9 RETURNING *`,
+    [c.name, c.phone || null, c.email || null, c.gstin, c.state_code, c.address || null, c.kind, c.tds_rate, req.params.id]);
+  if (!rows[0]) throw new HttpError(404, 'Not found');
   res.json(rows[0]);
 }));
 
@@ -37,19 +55,24 @@ const itemSchema = z.object({
   qty: z.coerce.number().positive(), rate: z.coerce.number().min(0), gst_rate: z.coerce.number().min(0).max(28),
 });
 const docSchema = z.object({
-  doc_type: z.enum(['quote', 'invoice']),
-  brand_id: z.coerce.number().int(),
+  doc_type: z.enum(['quote', 'invoice', 'bill']),
+  brand_id: z.coerce.number().int().nullable().optional(),
   customer_id: z.coerce.number().int(),
-  doc_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  doc_date: DATE,
+  due_date: DATE.nullable().optional(),
   place_of_supply: z.string().optional(),
   notes: z.string().nullable().optional(),
   terms: z.string().nullable().optional(),
   items: z.array(itemSchema).min(1),
+  // bills only
+  vendor_ref: z.string().max(60).nullable().optional(),
+  itc_eligible: z.boolean().default(true),
+  category_id: z.coerce.number().int().nullable().optional(),
+  split: z.array(z.object({ brand_id: z.coerce.number().int(), pct: z.coerce.number().positive() })).nullable().optional(),
 });
 
-async function company() {
-  const { rows } = await query("SELECT value FROM settings WHERE key='company'");
+async function company(q = query) {
+  const { rows } = await q("SELECT value FROM settings WHERE key='company'");
   return rows[0]?.value || { state_code: '34', doc_prefix: 'AFV' };
 }
 
@@ -59,19 +82,27 @@ async function nextNumber(client, brandId, docType, docDate, prefix) {
     ON CONFLICT (brand_id,doc_type,fy) DO UPDATE SET last_no = doc_sequences.last_no + 1 RETURNING last_no`, [brandId, docType, fy]);
   const b = await client.query('SELECT code FROM brands WHERE id=$1', [brandId]);
   if (!b.rows[0]) throw new HttpError(400, 'Unknown brand');
-  const tag = docType === 'quote' ? 'QT' : 'INV';
-  return `${prefix || 'AFV'}/${b.rows[0].code}/${tag}/${fy}/${String(rows[0].last_no).padStart(4, '0')}`;
+  return `${prefix || 'AFV'}/${b.rows[0].code}/${TAGS[docType]}/${fy}/${String(rows[0].last_no).padStart(4, '0')}`;
 }
 
 async function loadDoc(id, client) {
   const q = client ? client.query.bind(client) : query;
-  const { rows } = await q(`SELECT d.*, b.name AS brand_name, b.code AS brand_code, b.color AS brand_color,
-    to_jsonb(c.*) AS customer FROM documents d JOIN brands b ON b.id=d.brand_id JOIN customers c ON c.id=d.customer_id WHERE d.id=$1`, [id]);
+  const { rows } = await q(`SELECT d.*, b.name AS brand_name, b.code AS brand_code, b.color AS brand_color, cat.name AS category_name,
+    to_jsonb(c.*) AS customer, ag.number AS against_number
+    FROM documents d JOIN brands b ON b.id=d.brand_id JOIN customers c ON c.id=d.customer_id
+    LEFT JOIN categories cat ON cat.id=d.category_id LEFT JOIN documents ag ON ag.id=d.against_id WHERE d.id=$1`, [id]);
   if (!rows[0]) throw new HttpError(404, 'Document not found');
   const items = await q('SELECT * FROM document_items WHERE document_id=$1 ORDER BY position', [id]);
-  const payments = await q(`SELECT e.id, e.entry_date, e.amount, e.ref, a.name AS account_name FROM entries e
-    LEFT JOIN accounts a ON a.id=e.account_id WHERE e.document_id=$1 AND e.deleted_at IS NULL ORDER BY e.entry_date`, [id]);
-  return { ...rows[0], items: items.rows, payments: payments.rows };
+  const payments = await q(`SELECT e.id, e.entry_date, e.type, e.amount, e.gst_amount, e.tds_amount, e.ref, e.source, a.name AS account_name FROM entries e
+    LEFT JOIN accounts a ON a.id=e.account_id WHERE (e.document_id=$1 OR e.bill_id=$1) AND e.deleted_at IS NULL ORDER BY e.entry_date, e.id`, [id]);
+  const credits = await q(`SELECT id, number, doc_date, total, amount_credited, amount_paid, status FROM documents
+    WHERE doc_type='credit_note' AND against_id=$1 AND status<>'cancelled' ORDER BY doc_date`, [id]);
+  const d = rows[0];
+  const tax = round2(Number(d.cgst) + Number(d.sgst) + Number(d.igst));
+  let balance = docBalance(d);
+  // credit note: what's still to refund = total − applied to the invoice − refunded
+  if (d.doc_type === 'credit_note') balance = round2(Number(d.total) - Number(d.amount_credited) - Number(d.amount_paid));
+  return { ...d, tax, balance, items: items.rows, payments: payments.rows, credit_notes: credits.rows };
 }
 
 async function writeItems(client, docId, lines) {
@@ -83,36 +114,55 @@ async function writeItems(client, docId, lines) {
 }
 
 router.get('/documents', ah(async (req, res) => {
-  const f = parse(z.object({ doc_type: z.enum(['quote', 'invoice']).optional(), status: z.string().optional(),
-    brand_id: z.coerce.number().optional(), q: z.string().optional() }), req.query);
+  const f = parse(z.object({ doc_type: z.enum(['quote', 'invoice', 'credit_note', 'bill']).optional(), status: z.string().optional(),
+    brand_id: z.coerce.number().optional(), q: z.string().optional(), customer_id: z.coerce.number().optional() }), req.query);
+  if (req.user.role === 'sales' && f.doc_type === 'bill') throw new HttpError(403, 'Sales cannot see purchase bills');
   const where = ['TRUE']; const p = [];
+  if (req.user.role === 'sales') where.push("d.doc_type <> 'bill'");
   if (f.doc_type) { p.push(f.doc_type); where.push(`d.doc_type=$${p.length}`); }
-  if (f.status) { p.push(f.status); where.push(`d.status=$${p.length}`); }
+  if (f.status === 'overdue') where.push("d.status IN ('unpaid','partial') AND d.due_date < CURRENT_DATE");
+  else if (f.status) { p.push(f.status); where.push(`d.status=$${p.length}`); }
   if (f.brand_id) { p.push(f.brand_id); where.push(`d.brand_id=$${p.length}`); }
-  if (f.q) { p.push(`%${f.q}%`); where.push(`(d.number ILIKE $${p.length} OR c.name ILIKE $${p.length})`); }
-  const { rows } = await query(`SELECT d.id,d.doc_type,d.number,d.doc_date,d.due_date,d.status,d.total,d.amount_paid,
+  if (f.customer_id) { p.push(f.customer_id); where.push(`d.customer_id=$${p.length}`); }
+  if (f.q) { p.push(`%${f.q}%`); where.push(`(d.number ILIKE $${p.length} OR c.name ILIKE $${p.length} OR d.vendor_ref ILIKE $${p.length})`); }
+  const { rows } = await query(`SELECT d.id,d.doc_type,d.number,d.vendor_ref,d.doc_date,d.due_date,d.status,d.total,d.amount_paid,d.amount_credited,
+    (d.total-d.amount_paid-d.amount_credited) AS balance,
     b.name AS brand_name,b.code AS brand_code,b.color AS brand_color,c.name AS customer_name
     FROM documents d JOIN brands b ON b.id=d.brand_id JOIN customers c ON c.id=d.customer_id
     WHERE ${where.join(' AND ')} ORDER BY d.doc_date DESC, d.id DESC LIMIT 500`, p);
   res.json(rows);
 }));
 
-router.get('/documents/:id', ah(async (req, res) => res.json(await loadDoc(req.params.id))));
+router.get('/documents/:id', ah(async (req, res) => {
+  const d = await loadDoc(req.params.id);
+  if (req.user.role === 'sales' && d.doc_type === 'bill') throw new HttpError(403, 'Sales cannot see purchase bills');
+  res.json(d);
+}));
 
 router.post('/documents', ah(async (req, res) => {
   const d = parse(docSchema, req.body);
-  if (d.doc_type === 'invoice' && req.user.role === 'sales') throw new HttpError(403, 'Sales can create quotes; invoices are raised by accounts');
+  if (d.doc_type !== 'quote' && req.user.role === 'sales') throw new HttpError(403, 'Sales can create quotes; invoices and bills are made by accounts');
+  await assertOpen(d.doc_type === 'quote' ? null : d.doc_date);
   const co = await company();
-  const cust = await query('SELECT state_code FROM customers WHERE id=$1', [d.customer_id]);
-  if (!cust.rows[0]) throw new HttpError(400, 'Unknown customer');
-  const pos = d.place_of_supply || cust.rows[0].state_code || co.state_code;
+  const party = (await query('SELECT state_code, kind FROM customers WHERE id=$1', [d.customer_id])).rows[0];
+  if (!party) throw new HttpError(400, 'Unknown customer / vendor');
+  const shared = d.doc_type === 'bill' && d.split?.length;
+  // Bills: place of supply is OUR state when the vendor charges CGST+SGST — use the vendor's state for the split
+  const pos = d.place_of_supply || party.state_code || co.state_code;
   const t = computeTotals(d.items, co.state_code || '34', pos);
   const id = await tx(async (client) => {
-    const number = await nextNumber(client, d.brand_id, d.doc_type, d.doc_date, co.doc_prefix);
+    let brandId = d.brand_id;
+    if (shared || !brandId) brandId = (await client.query("SELECT id FROM brands WHERE code='HO'")).rows[0]?.id;
+    if (!brandId) throw new HttpError(400, 'Pick a brand');
+    const number = await nextNumber(client, brandId, d.doc_type, d.doc_date, co.doc_prefix);
+    const status = d.doc_type === 'quote' ? 'draft' : 'unpaid';
     const { rows } = await client.query(`INSERT INTO documents (doc_type,number,brand_id,customer_id,doc_date,due_date,status,place_of_supply,
-      subtotal,cgst,sgst,igst,total,notes,terms,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
-    [d.doc_type, number, d.brand_id, d.customer_id, d.doc_date, d.due_date || null, d.doc_type === 'invoice' ? 'unpaid' : 'draft', pos,
-      t.subtotal, t.cgst, t.sgst, t.igst, t.total, d.notes || null, d.terms ?? co.invoice_terms ?? null, req.user.id]);
+      subtotal,cgst,sgst,igst,total,notes,terms,vendor_ref,itc_eligible,category_id,split,created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+    [d.doc_type, number, brandId, d.customer_id, d.doc_date, d.due_date || null, status, pos,
+      t.subtotal, t.cgst, t.sgst, t.igst, t.total, d.notes || null, d.doc_type === 'bill' ? null : d.terms ?? co.invoice_terms ?? null,
+      d.doc_type === 'bill' ? d.vendor_ref || null : null, d.itc_eligible, d.doc_type === 'bill' ? d.category_id || null : null,
+      shared ? JSON.stringify(d.split) : null, req.user.id]);
     await writeItems(client, rows[0].id, t.lines);
     await audit(req.user.id, 'create', d.doc_type, rows[0].id, { number, total: t.total }, client);
     return rows[0].id;
@@ -123,17 +173,21 @@ router.post('/documents', ah(async (req, res) => {
 router.put('/documents/:id', ah(async (req, res) => {
   const d = parse(docSchema.omit({ doc_type: true }), req.body);
   const cur = await loadDoc(req.params.id);
-  if (cur.doc_type === 'invoice' && req.user.role === 'sales') throw new HttpError(403, 'Sales cannot edit invoices');
-  if (cur.amount_paid > 0) throw new HttpError(400, 'Invoice has payments — cancel and re-issue instead of editing');
+  if (cur.doc_type !== 'quote' && req.user.role === 'sales') throw new HttpError(403, 'Sales can only edit quotes');
+  if (cur.doc_type === 'credit_note') throw new HttpError(400, 'Credit notes cannot be edited — cancel it and issue a new one');
+  if (cur.amount_paid > 0 || cur.amount_credited > 0) throw new HttpError(400, 'This has payments or credit notes — issue a credit note instead of editing');
   if (['converted', 'cancelled', 'paid'].includes(cur.status)) throw new HttpError(400, `A ${cur.status} document cannot be edited`);
-  if (cur.brand_id !== d.brand_id) throw new HttpError(400, 'Brand cannot change after numbering — create a new document');
+  if (cur.doc_type !== 'bill' && d.brand_id && cur.brand_id !== d.brand_id) throw new HttpError(400, 'Brand cannot change after numbering — create a new document');
+  if (cur.doc_type !== 'quote') await assertOpen([cur.doc_date, d.doc_date]);
   const co = await company();
   const pos = d.place_of_supply || cur.place_of_supply;
   const t = computeTotals(d.items, co.state_code || '34', pos);
   await tx(async (client) => {
     await client.query(`UPDATE documents SET customer_id=$1,doc_date=$2,due_date=$3,place_of_supply=$4,subtotal=$5,cgst=$6,sgst=$7,igst=$8,
-      total=$9,notes=$10,terms=$11,updated_at=now() WHERE id=$12`,
-    [d.customer_id, d.doc_date, d.due_date || null, pos, t.subtotal, t.cgst, t.sgst, t.igst, t.total, d.notes || null, d.terms || null, cur.id]);
+      total=$9,notes=$10,terms=$11,vendor_ref=$12,itc_eligible=$13,category_id=$14,split=$15,updated_at=now() WHERE id=$16`,
+    [d.customer_id, d.doc_date, d.due_date || null, pos, t.subtotal, t.cgst, t.sgst, t.igst, t.total, d.notes || null, d.terms || null,
+      cur.doc_type === 'bill' ? d.vendor_ref || null : null, d.itc_eligible, cur.doc_type === 'bill' ? d.category_id || null : null,
+      cur.doc_type === 'bill' && d.split?.length ? JSON.stringify(d.split) : null, cur.id]);
     await writeItems(client, cur.id, t.lines);
     await audit(req.user.id, 'update', cur.doc_type, cur.id, { total: t.total }, client);
   });
@@ -151,12 +205,13 @@ router.post('/documents/:id/status', ah(async (req, res) => {
 }));
 
 // Convert quote → invoice (copies items; new invoice number)
-router.post('/documents/:id/convert', requireRole('admin', 'accounts'), ah(async (req, res) => {
+router.post('/documents/:id/convert', requireRole(...money), ah(async (req, res) => {
   const q = await loadDoc(req.params.id);
   if (q.doc_type !== 'quote') throw new HttpError(400, 'Only a quote can be converted');
   if (q.status === 'converted') throw new HttpError(400, 'Already converted');
   const co = await company();
   const today = new Date().toISOString().slice(0, 10);
+  await assertOpen(today);
   const due = req.body?.due_date || null;
   const id = await tx(async (client) => {
     const number = await nextNumber(client, q.brand_id, 'invoice', today, co.doc_prefix);
@@ -172,35 +227,118 @@ router.post('/documents/:id/convert', requireRole('admin', 'accounts'), ah(async
   res.status(201).json(await loadDoc(id));
 }));
 
-// Record a payment against an invoice → creates a Book "in" entry
-async function recordPayment(client, inv, { amount, paid_on, account_id, ref, userId, source = 'invoice' }) {
-  const balance = round2(inv.total - inv.amount_paid);
-  if (amount > balance + 0.01) throw new HttpError(400, `Amount is more than the balance (₹${balance})`);
-  const cat = await client.query("SELECT id FROM categories WHERE name='Client payment' AND kind='in'");
-  const { rows } = await client.query(`INSERT INTO entries (entry_date,brand_id,type,amount,category_id,account_id,party,note,ref,source,document_id,created_by)
-    VALUES ($1,$2,'in',$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-  [paid_on, inv.brand_id, amount, cat.rows[0]?.id || null, account_id || null, inv.customer?.name || null, `Payment for ${inv.number}`, ref || null, source, inv.id, userId || null]);
-  const paid = round2(inv.amount_paid + amount);
-  const status = paid >= inv.total - 0.01 ? 'paid' : 'partial';
-  await client.query('UPDATE documents SET amount_paid=$1, status=$2, updated_at=now() WHERE id=$3', [paid, status, inv.id]);
-  await client.query("UPDATE dues SET amount_settled=LEAST(amount, amount_settled+$1), status=CASE WHEN amount_settled+$1>=amount THEN 'settled' ELSE status END WHERE document_id=$2 AND status='open'", [amount, inv.id]);
-  return rows[0].id;
+// ── Payments ──
+// Invoice: `amount` = cash received, `tds_amount` = TDS the customer deducted. Both settle the invoice.
+// Bill:    `amount` = cash paid to the vendor.
+// The GST share of each payment goes on the Book entry so it never counts as income/expense.
+async function recordPayment(client, doc, { amount, tds_amount = 0, paid_on, account_id, ref, userId, source }) {
+  amount = round2(amount); tds_amount = round2(tds_amount || 0);
+  const settle = round2(amount + tds_amount);
+  const balance = docBalance(doc);
+  if (settle > balance + 0.01) throw new HttpError(400, `Amount${tds_amount ? ' + TDS' : ''} is more than the balance (₹${balance})`);
+  const isBill = doc.doc_type === 'bill';
+  if (isBill && tds_amount) throw new HttpError(400, 'TDS is only for money received from customers');
+  const tax = round2(Number(doc.cgst) + Number(doc.sgst) + Number(doc.igst));
+  const prev = (await client.query('SELECT COALESCE(SUM(gst_amount),0) AS g FROM entries WHERE (document_id=$1 OR bill_id=$1) AND deleted_at IS NULL', [doc.id])).rows[0];
+  // GST on a bill is only kept out of cost when we can claim it; otherwise it is part of the cost
+  // After a credit note the invoice is smaller — so is its GST
+  const effTotal = round2(Number(doc.total) - Number(doc.amount_credited || 0));
+  const effTax = Number(doc.total) ? round2((tax * effTotal) / Number(doc.total)) : 0;
+  const gstOnThis = isBill && !doc.itc_eligible ? 0
+    : gstShare({ total: effTotal, gst: effTax, settledBefore: doc.amount_paid, gstBefore: prev.g, settle });
+  let categoryId;
+  if (isBill) categoryId = doc.category_id || (await client.query("SELECT id FROM categories WHERE name='Vendor payment' AND kind='out'")).rows[0]?.id;
+  else categoryId = (await client.query("SELECT id FROM categories WHERE name='Client payment' AND kind='in'")).rows[0]?.id;
+  const split = isBill && doc.split ? doc.split : null;
+  const entryId = await insertEntry(client, {
+    entry_date: paid_on, type: isBill ? 'out' : 'in', amount, tds_amount, gst_amount: gstOnThis,
+    brand_id: doc.brand_id, split, category_id: categoryId || null, account_id, party: doc.customer?.name || null,
+    note: `${isBill ? 'Bill' : 'Payment for'} ${doc.number}${doc.vendor_ref ? ` (${doc.vendor_ref})` : ''}`, ref,
+    source: source || (isBill ? 'bill' : 'invoice'), document_id: isBill ? null : doc.id, bill_id: isBill ? doc.id : null, created_by: userId,
+  });
+  const paid = round2(Number(doc.amount_paid) + settle);
+  const status = paid + Number(doc.amount_credited || 0) >= Number(doc.total) - 0.01 ? 'paid' : 'partial';
+  await client.query('UPDATE documents SET amount_paid=$1, tds_total=tds_total+$2, status=$3, updated_at=now() WHERE id=$4', [paid, tds_amount, status, doc.id]);
+  await client.query("UPDATE dues SET amount_settled=LEAST(amount, amount_settled+$1), status=CASE WHEN amount_settled+$1>=amount THEN 'settled' ELSE status END WHERE document_id=$2 AND status='open'", [settle, doc.id]);
+  return entryId;
 }
 
-router.post('/documents/:id/payments', requireRole('admin', 'accounts'), ah(async (req, res) => {
-  const p = parse(z.object({ amount: z.coerce.number().positive(), paid_on: z.string(), account_id: z.coerce.number().nullable().optional(), ref: z.string().nullable().optional() }), req.body);
+router.post('/documents/:id/payments', requireRole(...money), ah(async (req, res) => {
+  const p = parse(z.object({ amount: z.coerce.number().positive(), tds_amount: z.coerce.number().min(0).default(0), paid_on: DATE,
+    account_id: z.coerce.number().nullable().optional(), ref: z.string().nullable().optional() }), req.body);
+  const doc = await loadDoc(req.params.id);
+  if (!['invoice', 'bill'].includes(doc.doc_type) || doc.status === 'cancelled') throw new HttpError(400, 'Payments can only be recorded on an active invoice or bill');
+  await tx((client) => recordPayment(client, doc, { ...p, userId: req.user.id }));
+  await audit(req.user.id, 'payment', doc.doc_type, doc.id, p);
+  res.json(await loadDoc(doc.id));
+}));
+
+// ── Credit notes ──
+// Issued against an invoice. It first reduces what the customer still owes; anything above that is a refund due to them.
+router.post('/documents/:id/credit-note', requireRole(...money), ah(async (req, res) => {
+  const c = parse(z.object({ doc_date: DATE, reason: z.string().min(2).max(300), items: z.array(itemSchema).min(1) }), req.body);
   const inv = await loadDoc(req.params.id);
-  if (inv.doc_type !== 'invoice' || inv.status === 'cancelled') throw new HttpError(400, 'Payments can only be recorded on an active invoice');
-  await tx((client) => recordPayment(client, inv, { ...p, userId: req.user.id }));
-  await audit(req.user.id, 'payment', 'invoice', inv.id, p);
-  res.json(await loadDoc(inv.id));
+  if (inv.doc_type !== 'invoice' || inv.status === 'cancelled') throw new HttpError(400, 'A credit note must be against an active invoice');
+  await assertOpen(c.doc_date);
+  const co = await company();
+  const t = computeTotals(c.items, co.state_code || '34', inv.place_of_supply);
+  const creditable = round2(Number(inv.total) - Number(inv.amount_credited));
+  if (t.total > creditable + 0.01) throw new HttpError(400, `Credit note (₹${t.total}) is more than what's left on the invoice (₹${creditable})`);
+  const id = await tx(async (client) => {
+    const number = await nextNumber(client, inv.brand_id, 'credit_note', c.doc_date, co.doc_prefix);
+    const applied = round2(Math.min(t.total, docBalance(inv)));     // reduces what they owe
+    const refundDue = round2(t.total - applied);                      // already paid → we owe them this
+    const { rows } = await client.query(`INSERT INTO documents (doc_type,number,brand_id,customer_id,doc_date,status,place_of_supply,
+      subtotal,cgst,sgst,igst,total,amount_credited,notes,against_id,created_by)
+      VALUES ('credit_note',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+    [number, inv.brand_id, inv.customer_id, c.doc_date, refundDue > 0 ? 'unpaid' : 'issued', inv.place_of_supply,
+      t.subtotal, t.cgst, t.sgst, t.igst, t.total, applied, c.reason, inv.id, req.user.id]);
+    await writeItems(client, rows[0].id, t.lines);
+    const credited = round2(Number(inv.amount_credited) + t.total);
+    const status = Number(inv.amount_paid) + credited >= Number(inv.total) - 0.01 ? 'paid' : inv.amount_paid > 0 ? 'partial' : 'unpaid';
+    await client.query('UPDATE documents SET amount_credited=$1, status=$2, updated_at=now() WHERE id=$3', [credited, status, inv.id]);
+    await audit(req.user.id, 'credit_note', 'invoice', inv.id, { number, total: t.total, refund_due: refundDue }, client);
+    return rows[0].id;
+  });
+  res.status(201).json(await loadDoc(id));
+}));
+
+// Pay back a customer the refund part of a credit note → Book "out" with the GST share (output GST reverses)
+router.post('/documents/:id/refund', requireRole(...money), ah(async (req, res) => {
+  const p = parse(z.object({ amount: z.coerce.number().positive(), paid_on: DATE, account_id: z.coerce.number().nullable().optional(), ref: z.string().nullable().optional() }), req.body);
+  const cn = await loadDoc(req.params.id);
+  if (cn.doc_type !== 'credit_note' || cn.status === 'cancelled') throw new HttpError(400, 'Refunds are made from a credit note');
+  if (p.amount > cn.balance + 0.01) throw new HttpError(400, `Only ₹${cn.balance} is due as a refund on this credit note`);
+  await tx(async (client) => {
+    const cat = (await client.query("SELECT id FROM categories WHERE name='Refund to customer' AND kind='out'")).rows[0];
+    const gst = round2((p.amount * cn.tax) / Number(cn.total));
+    await insertEntry(client, { entry_date: p.paid_on, type: 'out', amount: p.amount, gst_amount: gst, brand_id: cn.brand_id,
+      category_id: cat?.id, account_id: p.account_id, party: cn.customer?.name, note: `Refund for ${cn.number}`, ref: p.ref,
+      source: 'refund', document_id: cn.id, created_by: req.user.id });
+    const paid = round2(Number(cn.amount_paid) + p.amount);
+    await client.query("UPDATE documents SET amount_paid=$1, status=CASE WHEN amount_credited+$1>=total-0.01 THEN 'refunded' ELSE status END, updated_at=now() WHERE id=$2", [paid, cn.id]);
+    await audit(req.user.id, 'refund', 'credit_note', cn.id, p, client);
+  });
+  res.json(await loadDoc(cn.id));
 }));
 
 router.post('/documents/:id/cancel', requireRole('admin'), ah(async (req, res) => {
   const d = await loadDoc(req.params.id);
-  if (d.amount_paid > 0) throw new HttpError(400, 'This invoice has payments recorded, so it cannot be cancelled. Issue a credit note instead.');
-  await query("UPDATE documents SET status='cancelled', updated_at=now() WHERE id=$1", [d.id]);
-  await audit(req.user.id, 'cancel', d.doc_type, d.id);
+  if (d.status === 'cancelled') throw new HttpError(400, 'Already cancelled');
+  if (Number(d.amount_paid) > 0) throw new HttpError(400, d.doc_type === 'credit_note' ? 'A refund was paid on this credit note — it cannot be cancelled' : 'This has payments recorded, so it cannot be cancelled. Issue a credit note instead.');
+  if (d.credit_notes?.length) throw new HttpError(400, 'Cancel its credit notes first');
+  if (d.doc_type !== 'quote') await assertOpen(d.doc_date);
+  await tx(async (client) => {
+    await client.query("UPDATE documents SET status='cancelled', updated_at=now() WHERE id=$1", [d.id]);
+    if (d.doc_type === 'credit_note' && d.against_id) {
+      // give the credit back to the invoice
+      const inv = (await client.query('SELECT * FROM documents WHERE id=$1', [d.against_id])).rows[0];
+      const credited = round2(Number(inv.amount_credited) - Number(d.total));
+      const status = Number(inv.amount_paid) + credited >= Number(inv.total) - 0.01 ? 'paid' : inv.amount_paid > 0 ? 'partial' : 'unpaid';
+      await client.query('UPDATE documents SET amount_credited=$1, status=$2, updated_at=now() WHERE id=$3', [credited, status, inv.id]);
+    }
+    await audit(req.user.id, 'cancel', d.doc_type, d.id, null, client);
+  });
   res.json(await loadDoc(d.id));
 }));
 
