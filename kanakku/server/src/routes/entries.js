@@ -9,6 +9,8 @@ const { requireRole } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
 const { insertEntry, updateEntry } = require('../lib/ledger');
 const { assertOpen } = require('../lib/books');
+const petty = require('../lib/petty');
+const { notifyAdmins } = require('../lib/notify');
 
 const entrySchema = z.object({
   entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -23,6 +25,7 @@ const entrySchema = z.object({
   party: z.string().max(200).nullable().optional(),
   note: z.string().max(1000).nullable().optional(),
   ref: z.string().max(100).nullable().optional(),
+  no_bill: z.boolean().default(false),               // money out with no receipt (acknowledged — keeps it off the "bill missing" list)
   source: z.enum(['manual', 'ai']).default('manual'),
   split: z.array(z.object({ brand_id: z.coerce.number().int(), pct: z.coerce.number().positive() })).nullable().optional(),
   split_preset_id: z.coerce.number().int().nullable().optional(),
@@ -81,6 +84,13 @@ async function listEntries(f) {
       gst_in: Number(t.gst_in), gst_out: Number(t.gst_out), tds: Number(t.tds) } };
 }
 
+// Staff spends over the limit wait for an admin (Settings → Petty cash). Returns true if this entry must wait.
+async function approvalNeeded(client, user, e) {
+  const cfg = await petty.config(client.query.bind(client));
+  const kind = e.account_id ? (await client.query('SELECT kind FROM accounts WHERE id=$1', [e.account_id])).rows[0]?.kind : null;
+  return petty.needsApproval(cfg, { role: user.role, type: e.type, amount: e.amount, accountKind: kind });
+}
+
 router.get('/', requireRole('admin', 'accounts'), ah(async (req, res) => {
   res.json(await listEntries(parse(listSchema, req.query)));
 }));
@@ -93,11 +103,14 @@ router.get('/:id', requireRole('admin', 'accounts'), ah(async (req, res) => {
 
 router.post('/', requireRole('admin', 'accounts'), ah(async (req, res) => {
   const e = parse(entrySchema, req.body);
+  let waits = false;
   const id = await tx(async (client) => {
-    const newId = await insertEntry(client, { ...e, created_by: req.user.id });
-    await audit(req.user.id, 'create', 'entry', newId, e, client);
+    waits = await approvalNeeded(client, req.user, e);
+    const newId = await insertEntry(client, { ...e, created_by: req.user.id, ...(waits ? { status: 'pending', approval_required: true } : {}) });
+    await audit(req.user.id, waits ? 'create_needs_approval' : 'create', 'entry', newId, e, client);
     return newId;
   });
+  if (waits) notifyAdmins('Approval needed', `${req.user.name} spent ₹${Number(e.amount).toLocaleString('en-IN')}${e.party ? ` on ${e.party}` : ''}${e.note ? ` (${e.note})` : ''}. Open Book → To confirm to approve.`).catch(() => {});
   res.status(201).json((await query(`${SELECT} WHERE e.id=$1`, [id])).rows[0]);
 }));
 
@@ -105,11 +118,14 @@ router.put('/:id', requireRole('admin', 'accounts'), ah(async (req, res) => {
   const e = parse(entrySchema, req.body);
   const id = Number(req.params.id);
   await tx(async (client) => {
-    const cur = (await client.query('SELECT source, document_id, bill_id FROM entries WHERE id=$1 AND deleted_at IS NULL', [id])).rows[0];
+    const cur = (await client.query('SELECT source, document_id, bill_id, status, amount FROM entries WHERE id=$1 AND deleted_at IS NULL', [id])).rows[0];
     if (!cur) throw new HttpError(404, 'Entry not found');
     if (['razorpay', 'invoice', 'bill', 'investor', 'refund'].includes(cur.source) && req.user.role !== 'admin') throw new HttpError(403, 'Only admin can edit entries made automatically');
     if ((cur.document_id || cur.bill_id) && (e.split?.length || e.type === 'transfer')) throw new HttpError(400, 'A payment linked to an invoice or bill cannot be split or turned into a transfer');
-    await updateEntry(client, id, e);
+    let extra = {};
+    // Staff cannot raise an approved spend over the limit (or turn a draft into a posted one) by editing it
+    if (await approvalNeeded(client, req.user, e) && (cur.status === 'pending' || Number(e.amount) !== Number(cur.amount))) extra = { status: 'pending', approval_required: true };
+    await updateEntry(client, id, { ...e, ...extra });
     await audit(req.user.id, 'update', 'entry', id, e, client);
   });
   res.json((await query(`${SELECT} WHERE e.id=$1`, [id])).rows[0]);
@@ -119,9 +135,10 @@ router.put('/:id', requireRole('admin', 'accounts'), ah(async (req, res) => {
 router.post('/confirm', requireRole('admin', 'accounts'), ah(async (req, res) => {
   const { ids } = parse(z.object({ ids: z.array(z.coerce.number().int()).min(1) }), req.body);
   const n = await tx(async (client) => {
-    const rows = (await client.query("SELECT id, entry_date FROM entries WHERE id = ANY($1) AND status='pending' AND deleted_at IS NULL", [ids])).rows;
+    const rows = (await client.query("SELECT id, entry_date, approval_required FROM entries WHERE id = ANY($1) AND status='pending' AND deleted_at IS NULL", [ids])).rows;
+    if (req.user.role !== 'admin' && rows.some((r) => r.approval_required)) throw new HttpError(403, 'A staff spend over the limit needs an admin to approve it');
     await assertOpen(rows.map((r) => r.entry_date), client.query.bind(client));
-    await client.query("UPDATE entries SET status='posted' WHERE id = ANY($1)", [rows.map((r) => r.id)]);
+    await client.query("UPDATE entries SET status='posted', approved_by=CASE WHEN approval_required THEN $2::int END, approved_at=CASE WHEN approval_required THEN now() END WHERE id = ANY($1)", [rows.map((r) => r.id), req.user.id]);
     for (const r of rows) await audit(req.user.id, 'confirm', 'entry', r.id, null, client);
     return rows.length;
   });

@@ -195,6 +195,55 @@ test('books: full money flow on a test database', { skip: !base && 'no DATABASE_
     assert.match(buildIcs(items), /Car loan EMI/);
   });
 
+  await t.test('petty cash: balance, top-up, bills missing, no-bill tag, staff approval', async () => {
+    const petty = require('../src/lib/petty');
+    const repairs = await cat('Repairs & maintenance', 'out');
+    assert.ok((await one('SELECT default_preset_id FROM categories WHERE id=$1', [repairs])).default_preset_id, 'maintenance splits across brands by default');
+    const cfg = await petty.config();
+    await petty.saveConfig({ ...cfg, account_id: cash, float: 10000, low_at: 3000, approval: { on: true, above: 500, cash_only: true } });
+    const D = '2026-12-05'; const today = '2026-12-10';
+    const spend = (extra) => insertEntry(client0, { entry_date: D, type: 'out', amount: 1200, brand_id: TX, category_id: repairs, account_id: cash, created_by: null, ...extra });
+    const client0 = { query: (...a) => query(...a) };
+    const before = (await petty.status(today)).balance;
+    const missingBefore = (await petty.status(today)).bills_missing.count; // spends from earlier tests also count
+    const e1 = await spend({ note: 'AC service' });                    // no bill photo yet
+    const e2 = await spend({ amount: 300, note: 'tea', no_bill: true });  // marked "no bill"
+    await insertEntry(client0, { entry_date: D, type: 'transfer', amount: 5000, account_id: rbl, to_account_id: cash, source: 'transfer' });
+    let st = await petty.status(today);
+    assert.equal(st.balance, before - 1200 - 300 + 5000, 'spends reduce the cash box, the top-up adds to it');
+    assert.equal(st.bills_missing.count, missingBefore + 1, 'the new spend with no photo is listed');
+    assert.ok(st.bills_missing.rows.some((r) => r.id === e1) && !st.bills_missing.rows.some((r) => r.id === e2), 'a "no bill" spend is not nagged about');
+    assert.equal(st.no_bill.count, 1); assert.equal(st.no_bill.amount, 300);
+    assert.ok(st.month.by_category.find((c) => c.name === 'Repairs & maintenance').amount >= 1500);
+    await query("INSERT INTO attachments (entity, entity_id, filename, mime, size, path) VALUES ('entry',$1,'bill.jpg','image/jpeg',1,'x')", [e1]);
+    assert.equal((await petty.status(today)).bills_missing.count, missingBefore, 'adding the bill photo clears it from the list');
+    // a staff spend waiting for approval does not touch the balance until an admin confirms it
+    const wait = await spend({ amount: 800, status: 'pending', approval_required: true });
+    assert.equal((await petty.status(today)).balance, st.balance, 'pending spend not counted');
+    assert.equal((await petty.status(today)).awaiting_approval.count, 1);
+    await query("UPDATE entries SET status='posted' WHERE id=$1", [wait]);
+    st = await petty.status(today);
+    assert.equal(st.balance, before - 1200 - 300 + 5000 - 800);
+    await petty.saveConfig({ ...(await petty.config()), float: st.balance + 5000, low_at: st.balance + 1 });
+    st = await petty.status(today);
+    assert.equal(st.low, true, 'below the warning level'); assert.equal(st.topup_suggest, 5000, 'top up back to the float');
+    await petty.saveConfig({ ...(await petty.config()), float: st.balance + 5000, low_at: st.balance - 1 });
+    assert.equal((await petty.status(today)).low, false);
+  });
+
+  await t.test('staff-spend approval rule: only staff, only money out, only over the limit, only cash', () => {
+    const { needsApproval } = require('../src/lib/petty');
+    const cfg = { approval: { on: true, above: 500, cash_only: true } };
+    const base = { role: 'accounts', type: 'out', amount: 800, accountKind: 'cash' };
+    assert.equal(needsApproval(cfg, base), true);
+    assert.equal(needsApproval(cfg, { ...base, amount: 500 }), false, 'at the limit is fine');
+    assert.equal(needsApproval(cfg, { ...base, role: 'admin' }), false, 'admin never waits');
+    assert.equal(needsApproval(cfg, { ...base, type: 'in' }), false);
+    assert.equal(needsApproval(cfg, { ...base, accountKind: 'bank' }), false, 'cash only');
+    assert.equal(needsApproval({ approval: { on: true, above: 500, cash_only: false } }, { ...base, accountKind: 'bank' }), true);
+    assert.equal(needsApproval({ approval: { on: false, above: 0, cash_only: true } }, base), false, 'off by default');
+  });
+
   await pool.end?.();
   if (!process.env.KANAKKU_KEEP_TEST_DB && ok && dbName.endsWith('_test')) { try { await adminQuery(`DROP DATABASE IF EXISTS ${dbName}`); } catch { /* fine */ } }
 });

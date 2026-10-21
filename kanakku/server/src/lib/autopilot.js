@@ -3,7 +3,7 @@
 //
 //   recurring            06:00  rent, salaries, subscriptions → Book (to confirm, or posted)
 //   month_lock           07:00  on the "auto-close day" (default 10th), close last month so its numbers can't change
-//   alerts               08:00  money running out in the next N days · a brand over budget · backups missing · bills overdue
+//   alerts               08:00  money running out in the next N days · a brand over budget · backups missing · bills overdue · cash box low · cash spends with no bill
 //   weekly_brief         09:00  Monday: money summary to admins on WhatsApp + email
 //   reminders            10:00  polite WhatsApp reminders for invoices/dues due soon or overdue (not more than every N days)
 //   investor_statements  11:00  on each investor's statement day: last month's profit-share statement
@@ -120,6 +120,13 @@ const JOBS = {
     const bills = (await query(`SELECT COUNT(*)::int AS n, COALESCE(SUM(total-amount_paid-amount_credited),0) AS amt FROM documents
       WHERE doc_type='bill' AND status IN ('unpaid','partial') AND due_date < $1`, [now.date])).rows[0];
     if (bills.n) said.push(`${bills.n} vendor bill${bills.n === 1 ? '' : 's'} overdue (₹${fmt(bills.amt)}).`);
+    // petty cash: low cash box, and (Mondays only) cash spends still without a bill photo
+    const pc = await require('./petty').status(now.date);
+    if (pc.account) {
+      if (pc.low) said.push(`Cash box is ₹${fmt(pc.balance)} (below ₹${fmt(pc.low_at)}). Top up about ₹${fmt(pc.topup_suggest)} from the bank.`);
+      const old = pc.bills_missing.rows.filter((r) => String(r.entry_date).slice(0, 10) <= new Date(new Date(`${now.date}T00:00:00Z`).getTime() - 7 * 864e5).toISOString().slice(0, 10));
+      if (old.length && now.weekday === 1) said.push(`${old.length} cash spend${old.length === 1 ? '' : 's'} (₹${fmt(old.reduce((s, r) => s + Number(r.amount), 0))}) over a week old ha${old.length === 1 ? 's' : 've'} no bill photo — add it or tick "No bill" (Money → Petty cash).`);
+    }
     if (!said.length) return { summary: 'All good — nothing to alert' };
     await notifyAdmins('Alert', said.join(' '));
     return { summary: said.join(' '), detail: { alerts: said } };

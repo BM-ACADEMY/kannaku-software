@@ -403,3 +403,10 @@ CREATE TABLE IF NOT EXISTS autopilot_log (
   ran_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS autopilot_log_job_idx ON autopilot_log(job, ran_at DESC);
+
+-- ───────────── Petty cash, approval of staff spends, "no bill" tag ─────────────
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS no_bill BOOLEAN NOT NULL DEFAULT FALSE;            -- spend with no receipt (acknowledged)
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;  -- staff spend waiting for admin
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS approved_by INT REFERENCES users(id);
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS entries_nobill_idx ON entries(entry_date) WHERE no_bill AND deleted_at IS NULL;

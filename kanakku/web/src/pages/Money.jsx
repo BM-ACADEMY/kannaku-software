@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api, qs } from '../lib/api.js';
 import { fmtDate, inr, inr2 } from '../lib/format.js';
+import PettyCash from './PettyCash.jsx';
 import { BrandSelect, BrandTag, Empty, Err, Field, Loader, Modal, Stat, useApp, useAsync } from '../components/ui.jsx';
 
 const KIND = { cash: 'Cash', bank: 'Bank', upi: 'UPI', gateway: 'Gateway' };
@@ -249,9 +250,10 @@ export default function Money() {
     <>
       <div className="page-head"><div><h1>Money</h1><p>What's in each account, and the bank statement matched against the Book.</p></div></div>
       <div className="tabs">
-        {[['balances', 'Balances'], ['bank', 'Bank statement'], ['rules', 'Auto rules']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}
+        {[['balances', 'Balances'], ['petty', 'Petty cash'], ['bank', 'Bank statement'], ['rules', 'Auto rules']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}
       </div>
       {tab === 'balances' && <Balances />}
+      {tab === 'petty' && <PettyCash />}
       {tab === 'bank' && <Reconcile />}
       {tab === 'rules' && <Rules />}
     </>

@@ -48,6 +48,7 @@ app.use('/api', requireAuth, (req, _res, next) => {
 app.use('/api/portal', requireAuth, require('./routes/portal'));
 app.use('/api/bank', requireAuth, require('./routes/bank'));
 app.use('/api/recurring', requireAuth, require('./routes/recurring'));
+app.use('/api/petty', requireAuth, require('./routes/petty'));
 app.use('/api/attachments', requireAuth, require('./routes/attachments'));
 app.use('/api/autopilot', requireAuth, require('./routes/autopilot'));
 app.use('/api', requireAuth, require('./routes/meta'));

@@ -79,6 +79,8 @@ Database changes apply automatically on start (`initDb.js` runs `schema.sql` + `
 
 - **To-pay reminders + Google Calendar (v2.1).** `lib/upcoming.js` lists what is due (unpaid bills/invoices/credit notes, dues with a due date, every coming date of active recurring entries; category *Loan repaid* = EMI). Autopilot job `pay_reminders` (09:30, `days_before` 3) sends one message to admins with overdue items and those due today, tomorrow and in N days. `GET /api/calendar/feed/<token>.ics` is a private iCalendar feed (no login, random 48-hex token, constant-time compare, 404 when off) that Google/Apple/Outlook subscribe to; on/off, include-incoming, days ahead and New link under Autopilot → *Coming up & calendar*.
 
+- **Petty cash (v2.2).** New categories *Repairs & maintenance*, *Tea, snacks & pantry*, *Stationery & printing* (office-wide split by default). Money → **Petty cash** tab: cash box balance vs float, low-cash warning, top-up (a transfer from the bank), weekly cash count (kept as a record, admins told if it differs), spend by category, **bills missing** (cash spends with no photo). Entries have a **No bill / receipt** tick (`entries.no_bill`). Optional **staff-spend approval** (`settings.petty_cash.approval`: on/off, limit, cash only): staff money-out over the limit is saved as `pending` + `approval_required`, only an admin can confirm it, and it counts nowhere until then. Autopilot *alerts* adds: cash box low (daily) and old cash spends without a bill (Mondays). New: `lib/petty.js`, `routes/petty.js` (`/api/petty`), `web/src/pages/PettyCash.jsx`. Schema adds four columns on `entries` (idempotent; applied on every start by `initDb.js`).
+
 **Tests:** `npm test` runs `server/test/money.test.js` (pure logic, runs anywhere) and `server/test/books.db.test.js` (creates `<db>_test`, runs real flows, drops it). In Docker it's `./kanakku.sh test`.
 
 ## Files
@@ -86,8 +88,8 @@ Database changes apply automatically on start (`initDb.js` runs `schema.sql` + `
 ```
 server/src/lib/   books.js (lock, GST share, balances) · ledger.js (one way to write an entry) · gstr.js · forecast.js
                   bankcsv.js · reconcile.js · recurring.js · autopilot.js · notify.js · secrets.js · totp.js
-                  upcoming.js · ics.js
-server/src/routes/ bank.js · recurring.js · attachments.js · autopilot.js · portal.js · calendar.js  (+ big changes in deals, entries, auth, meta, reports)
+                  upcoming.js · ics.js · petty.js
+server/src/routes/ bank.js · recurring.js · attachments.js · autopilot.js · portal.js · calendar.js · petty.js  (+ big changes in deals, entries, auth, meta, reports)
 web/src/pages/    Money.jsx · Autopilot.jsx · Portal.jsx  (+ Book, Deals, Reports, Settings, Login, Dashboard rebuilt)
 web/src/components/ Attachments.jsx · TwoStep.jsx
 server/test/      money.test.js · books.db.test.js

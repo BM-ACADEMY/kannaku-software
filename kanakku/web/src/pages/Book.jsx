@@ -6,7 +6,7 @@ import SplitEditor, { splitTotal } from '../components/SplitEditor.jsx';
 import Attachments from '../components/Attachments.jsx';
 
 const blank = () => ({ entry_date: today(), brand_id: '', type: 'in', amount: '', gst_amount: '', tds_amount: '', category_id: '', account_id: '',
-  to_account_id: '', party: '', note: '', ref: '', source: 'manual' });
+  to_account_id: '', party: '', note: '', ref: '', no_bill: false, source: 'manual' });
 const AUTO = ['razorpay', 'invoice', 'bill', 'investor', 'refund'];
 const SOURCE_LABEL = { razorpay: 'Razorpay', invoice: 'invoice', bill: 'bill', investor: 'investor', refund: 'refund', recurring: 'recurring', bank: 'bank', ai: 'typed' };
 
@@ -38,6 +38,10 @@ export function EntryForm({ initial, onClose, onSaved }) {
   const locked = AUTO.includes(f.source) && user.role !== 'admin';
   const linked = !!(f.document_id || f.bill_id);
   const pending = f.status === 'pending';
+  const needsAdmin = pending && f.approval_required && user.role !== 'admin';
+  const ap = boot.approval;
+  const payKind = boot.accounts.find((a) => a.id === Number(f.account_id))?.kind;
+  const willWait = !!ap?.on && user.role !== 'admin' && f.type === 'out' && !pending && Number(f.amount) > Number(ap.above || 0) && (ap.cash_only === false || payKind === 'cash');
   const closedUntil = boot.books?.lock_until;
   const inClosed = closedUntil && f.entry_date <= closedUntil;
   const cat = boot.categories.find((c) => c.id === Number(f.category_id));
@@ -48,7 +52,8 @@ export function EntryForm({ initial, onClose, onSaved }) {
       category_id: isTransfer ? null : f.category_id || null, account_id: f.account_id || null, to_account_id: isTransfer ? f.to_account_id || null : null,
       source: f.source === 'ai' ? 'ai' : 'manual', brand_id: f.shared || isTransfer ? null : f.brand_id,
       split: f.shared && !isTransfer ? f.split : null, split_preset_id: f.shared && !isTransfer ? f.split_preset_id || null : null };
-    ['shared', 'allocations', 'status', 'document_id', 'bill_id', 'attachment_count'].forEach((k) => delete b[k]);
+    b.no_bill = f.type === 'out' && !!f.no_bill;
+    ['shared', 'allocations', 'status', 'document_id', 'bill_id', 'attachment_count', 'approval_required', 'approved_by', 'approved_at'].forEach((k) => delete b[k]);
     return b;
   };
   const save = async (confirm = false) => {
@@ -56,7 +61,7 @@ export function EntryForm({ initial, onClose, onSaved }) {
     try {
       const r = f.id ? await api(`/entries/${f.id}`, { method: 'PUT', body: body() }) : await api('/entries', { method: 'POST', body: body() });
       if (confirm) await api('/entries/confirm', { method: 'POST', body: { ids: [r.id] } });
-      onSaved(r, confirm ? 'Confirmed' : 'Saved');
+      onSaved(r, confirm ? 'Confirmed' : r.approval_required && r.status === 'pending' && user.role !== 'admin' ? 'Saved — waiting for admin approval' : 'Saved');
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
   const del = async () => {
@@ -70,12 +75,17 @@ export function EntryForm({ initial, onClose, onSaved }) {
       <span className="spacer" />
       <button className="btn" onClick={onClose}>Cancel</button>
       {pending
-        ? <button className="btn green" onClick={() => save(true)} disabled={busy || locked || !valid}>{busy ? 'Saving…' : 'Confirm'}</button>
+        ? <>
+          {needsAdmin && <button className="btn" onClick={() => save(false)} disabled={busy || !valid}>{busy ? 'Saving…' : 'Save changes'}</button>}
+          {!needsAdmin && <button className="btn green" onClick={() => save(true)} disabled={busy || locked || !valid}>{busy ? 'Saving…' : f.approval_required ? 'Approve' : 'Confirm'}</button>}
+        </>
         : <button className="btn primary" onClick={() => save(false)} disabled={busy || locked || !valid}>{busy ? 'Saving…' : 'Save'}</button>}
     </>}>
       <Err error={error} />
       {locked && <div className="note-box">This entry was made automatically (from an {SOURCE_LABEL[f.source]}). Only admin can change it.</div>}
-      {pending && <div className="note-box">Autopilot prepared this from {f.source === 'bank' ? 'the bank statement' : 'a recurring bill'}. Check it, change anything, then confirm. It doesn't count anywhere until you do.</div>}
+      {willWait && <div className="note-box">This spend is over {inr(ap.above)}, so after you save it waits for an admin to approve it. It won't count in the Book until then.</div>}
+      {pending && f.approval_required && <div className="note-box">{needsAdmin ? 'This spend is over the limit, so it is waiting for an admin to approve it. It does not count anywhere until then.' : `Spent by ${f.created_by_name || 'staff'} — over the approval limit. Check it, then approve.`}</div>}
+      {pending && !f.approval_required && <div className="note-box">Autopilot prepared this from {f.source === 'bank' ? 'the bank statement' : 'a recurring bill'}. Check it, change anything, then confirm. It doesn't count anywhere until you do.</div>}
       {f.source === 'ai' && !f.id && <div className="note-box">Filled in from your note — check the details, then save.</div>}
       {inClosed && <div className="banner bad">Books are closed up to {fmtDate(closedUntil)} — this date can't be saved unless an admin reopens the month.</div>}
       <div className="row">
@@ -142,6 +152,10 @@ export function EntryForm({ initial, onClose, onSaved }) {
         <SplitEditor rules={f.split} amount={f.amount} onChange={(split) => setF({ ...f, split, split_preset_id: '' })} />
       )}
       <Field label="Note"><input className="input" value={f.note || ''} onChange={set('note')} /></Field>
+      {f.type === 'out' && !linked && (
+        <label className="toggle" style={{ alignItems: 'flex-start' }}><input type="checkbox" checked={!!f.no_bill} onChange={(e) => setF({ ...f, no_bill: e.target.checked })} />
+          <span>No bill / receipt for this spend<br /><span className="muted small">e.g. tea, auto fare — the CA sees these separately</span></span></label>
+      )}
       <Field label="Reference (UTR / cheque no.)"><input className="input" value={f.ref || ''} onChange={set('ref')} /></Field>
       {f.id ? <Attachments entity="entry" id={f.id} /> : <div className="muted small">Save first, then you can attach the bill photo.</div>}
     </Modal>
@@ -161,7 +175,7 @@ function PendingList({ onOpen, onChanged }) {
   };
   return (
     <>
-      <div className="banner info">These were prepared by autopilot from recurring bills and the bank statement. Nothing here counts until it's confirmed.
+      <div className="banner info">These were prepared by autopilot from recurring bills and the bank statement, or are staff spends waiting for approval. Nothing here counts until it's confirmed.
         {picked.length > 0 && <button className="btn green sm" onClick={() => confirm(picked)}>Confirm {picked.length}</button>}
       </div>
       <div className="card table-wrap">
@@ -176,7 +190,7 @@ function PendingList({ onOpen, onChanged }) {
                 <td>{fmtDate(r.entry_date)}</td>
                 <td>{r.allocations?.length ? <span className="tag">Shared · {r.allocations.length}</span> : <BrandTag code={r.brand_code} color={r.brand_color} />}</td>
                 <td><div>{r.party || r.category_name || '—'}</div><div className="muted small">{r.note}</div></td>
-                <td className="hide-sm"><span className="pill pending">{SOURCE_LABEL[r.source] || r.source}</span></td>
+                <td className="hide-sm"><span className="pill pending">{r.approval_required ? 'needs approval' : SOURCE_LABEL[r.source] || r.source}</span></td>
                 <td className="num"><Money v={r.amount} type={r.type} /></td>
               </tr>))}</tbody>
           </table>
@@ -271,7 +285,7 @@ export default function Book() {
                               <div className="split-chips">{r.allocations.slice(0, 4).map((a) => <BrandTag key={a.brand_id} code={`${a.brand_code} ${Number(a.pct)}%`} color={a.brand_color} />)}
                                 {r.allocations.length > 4 && <span className="muted small">+{r.allocations.length - 4}</span>}</div></>
                           ) : <BrandTag code={r.brand_code} color={r.brand_color} />}</td>
-                          <td><div>{r.type === 'transfer' ? `${r.account_name || '?'} → ${r.to_account_name || '?'}` : r.party || '—'}{r.attachment_count > 0 && <span title="Bill attached"> 📎</span>}</div>
+                          <td><div>{r.type === 'transfer' ? `${r.account_name || '?'} → ${r.to_account_name || '?'}` : r.party || '—'}{r.attachment_count > 0 && <span title="Bill attached"> 📎</span>}{r.no_bill && <span className="pill" style={{ marginLeft: 6 }}>no bill</span>}</div>
                             {r.note && <div className="muted small">{r.note}</div>}</td>
                           <td className="hide-sm">{r.category_name || '—'}</td>
                           <td className="hide-sm muted">{r.type !== 'transfer' && (r.account_name || '—')}{r.source !== 'manual' && <span className="pill" style={{ marginLeft: 6 }}>{SOURCE_LABEL[r.source] || r.source}</span>}</td>

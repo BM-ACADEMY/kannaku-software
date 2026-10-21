@@ -32,6 +32,15 @@ Open **kanakku.afraventures.in** on phone or laptop and log in with your email.
 
 Razorpay payments with the invoice number in the notes are recorded automatically.
 
+## Petty cash, repairs and small spends
+- **Enter every cash spend in Book** with *Paid from: Cash box*. Category: **Repairs & maintenance**, **Tea, snacks & pantry**, **Stationery & printing**, **Travel & fuel** or **Office expense**. Office-wide ones split across brands by themselves; for one brand only, untick *Shared cost* and pick the brand.
+- **Money → Petty cash** shows the cash box balance, what was spent this month by category, bills missing, and past cash counts.
+- **Top up:** when you take cash out of the bank, press **Top up** (it's a transfer, not an expense). It suggests the amount to bring the box back to its float.
+- **Count the cash** once a week: type what's in the box. If it differs from the Book, admins get a message and you can find the missing entry.
+- **Bills missing:** every cash spend should have a bill photo (open the entry → *+ Add photo / PDF*). If there truly is no bill (tea, auto fare), tick **No bill / receipt** instead — the CA sees those separately.
+- **Staff approval (admin turns it on in Petty cash → Settings):** money out entered by staff over the limit (e.g. ₹500, cash only) waits in **Book → To confirm**. It doesn't count until an admin presses **Approve**. Admins get a WhatsApp/email.
+- **Alerts:** each morning at 8 you're told if the cash box is below the warning level, and on Mondays about cash spends over a week old with no bill photo.
+
 ## Dues
 - **To collect** — unpaid invoices show up here on their own, plus anything you add by hand (advances, etc.).
 - **To pay** — vendor bills, rent due, anything we owe.

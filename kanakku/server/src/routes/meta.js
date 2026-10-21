@@ -14,6 +14,7 @@ const razorpay = require('../lib/razorpay');
 const { grokChat } = require('../lib/ai');
 
 router.get('/bootstrap', ah(async (_req, res) => {
+  const pettyCfg = await require('../lib/petty').config();
   const [brands, categories, accounts, company, presets, bookCfg] = await Promise.all([
     query('SELECT * FROM brands ORDER BY sort_order, name'),
     query('SELECT * FROM categories WHERE active ORDER BY kind, name'),
@@ -23,7 +24,7 @@ router.get('/bootstrap', ah(async (_req, res) => {
     query("SELECT value FROM settings WHERE key='books'"),
   ]);
   res.json({ brands: brands.rows, categories: categories.rows, accounts: accounts.rows, company: company.rows[0]?.value || {}, presets: presets.rows,
-    books: bookCfg.rows[0]?.value || {} });
+    books: bookCfg.rows[0]?.value || {}, approval: pettyCfg.approval });
 }));
 
 const brandSchema = z.object({

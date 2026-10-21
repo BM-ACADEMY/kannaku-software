@@ -80,3 +80,13 @@ INSERT INTO settings (key, value) VALUES
      }
    }'::jsonb)
 ON CONFLICT (key) DO NOTHING;
+
+-- Petty cash / maintenance categories (office-wide by default — switch "Shared cost" off for a one-brand spend)
+INSERT INTO categories (name, kind) VALUES
+  ('Repairs & maintenance','out'), ('Tea, snacks & pantry','out'), ('Stationery & printing','out')
+ON CONFLICT (name, kind) DO NOTHING;
+UPDATE categories SET default_preset_id = (SELECT id FROM split_presets WHERE name='Office overheads (all running brands)')
+  WHERE kind='out' AND name IN ('Repairs & maintenance','Tea, snacks & pantry','Stationery & printing') AND default_preset_id IS NULL;
+INSERT INTO settings (key, value) VALUES
+  ('petty_cash', '{"account_id": null, "float": 10000, "low_at": 2000, "approval": {"on": false, "above": 500, "cash_only": true}, "counts": []}'::jsonb)
+ON CONFLICT (key) DO NOTHING;
