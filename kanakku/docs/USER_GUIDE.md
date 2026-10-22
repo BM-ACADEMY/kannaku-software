@@ -39,7 +39,15 @@ Razorpay payments with the invoice number in the notes are recorded automaticall
 - **Count the cash** once a week: type what's in the box. If it differs from the Book, admins get a message and you can find the missing entry.
 - **Bills missing:** every cash spend should have a bill photo (open the entry → *+ Add photo / PDF*). If there truly is no bill (tea, auto fare), tick **No bill / receipt** instead — the CA sees those separately.
 - **Staff approval (admin turns it on in Petty cash → Settings):** money out entered by staff over the limit (e.g. ₹500, cash only) waits in **Book → To confirm**. It doesn't count until an admin presses **Approve**. Admins get a WhatsApp/email.
-- **Alerts:** each morning at 8 you're told if the cash box is below the warning level, and on Mondays about cash spends over a week old with no bill photo.
+- **Alerts:** each morning at 8 you're told if the cash box is below the warning level, if cash collected before today is not handed over yet, and on Mondays about cash spends over a week old with no bill photo.
+
+**Daily cash from customers — keep it separate from petty cash**
+1. Settings → Accounts: add two accounts of type *Cash*: **Cash collections** and **Petty cash** (you can rename your old *Cash box* to *Cash collections*).
+2. Money → Petty cash → **Settings**: choose **Petty cash** as the cash box account and **Cash collections** as the collections account. Float ₹2,000, warn below ₹500 are good starting numbers.
+3. When a customer pays cash, enter it in Book as *Money in — Received in: Cash collections*.
+4. At the end of the day press **Hand over cash**: the whole amount moves to the bank (or to *cash in hand* with you). Cash collections should now be ₹0. If it isn't, someone hasn't handed over — you get an alert next morning.
+5. When you give ₹1,000–2,000 for small spends, press **Top up** and pick where it came from (bank, cash in hand or collections). Staff enter each small spend as *Paid from: Petty cash*.
+
 
 ## Dues
 - **To collect** — unpaid invoices show up here on their own, plus anything you add by hand (advances, etc.).

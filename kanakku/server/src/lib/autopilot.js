@@ -122,6 +122,7 @@ const JOBS = {
     if (bills.n) said.push(`${bills.n} vendor bill${bills.n === 1 ? '' : 's'} overdue (₹${fmt(bills.amt)}).`);
     // petty cash: low cash box, and (Mondays only) cash spends still without a bill photo
     const pc = await require('./petty').status(now.date);
+    if (pc.collections && pc.collections.yesterday_balance > 0.5) said.push(`₹${fmt(pc.collections.yesterday_balance)} collected in ${pc.collections.name} is not handed over yet — record the handover (Money → Petty cash).`);
     if (pc.account) {
       if (pc.low) said.push(`Cash box is ₹${fmt(pc.balance)} (below ₹${fmt(pc.low_at)}). Top up about ₹${fmt(pc.topup_suggest)} from the bank.`);
       const old = pc.bills_missing.rows.filter((r) => String(r.entry_date).slice(0, 10) <= new Date(new Date(`${now.date}T00:00:00Z`).getTime() - 7 * 864e5).toISOString().slice(0, 10));

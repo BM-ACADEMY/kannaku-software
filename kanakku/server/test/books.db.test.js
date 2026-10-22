@@ -231,6 +231,36 @@ test('books: full money flow on a test database', { skip: !base && 'no DATABASE_
     assert.equal((await petty.status(today)).low, false);
   });
 
+  await t.test('cash collections: daily cash waits in its own account until handed over; never the petty box', async () => {
+    const petty = require('../src/lib/petty');
+    const col = (await one(`INSERT INTO accounts (name,kind,opening_balance,opening_date) VALUES ('Test collections','cash',0,'2026-09-12') RETURNING id`)).id;
+    const cfg = await petty.config();
+    await petty.saveConfig({ ...cfg, account_id: cash, collections_account_id: col });
+    const income = await cat('Client payment', 'in');
+    const today = '2026-12-12';
+    const c0 = { query: (...a) => query(...a) };
+    await insertEntry(c0, { entry_date: '2026-12-10', type: 'in', amount: 4500, brand_id: TX, category_id: income, account_id: col });
+    await insertEntry(c0, { entry_date: '2026-12-11', type: 'in', amount: 1500, brand_id: TX, category_id: income, account_id: col });
+    let st = await petty.status(today);
+    assert.equal(st.collections.balance, 6000);
+    assert.equal(st.collections.yesterday_balance, 6000, 'cash from before today is still not handed over → morning alert');
+    assert.equal(st.collections.last_handover, null);
+    // hand over everything to the bank
+    const bankBefore = (await accountBalances()).find((a) => a.id === rbl).balance;
+    await insertEntry(c0, { entry_date: '2026-12-11', type: 'transfer', amount: 6000, account_id: col, to_account_id: rbl, source: 'transfer' });
+    st = await petty.status(today);
+    assert.equal(st.collections.balance, 0); assert.equal(st.collections.yesterday_balance, 0, 'nothing waiting → no alert');
+    assert.deepEqual(st.collections.last_handover, { date: '2026-12-11', amount: 6000 });
+    assert.equal((await accountBalances()).find((a) => a.id === rbl).balance, bankBefore + 6000, 'the bank got the cash');
+    // customers' cash never counts as petty cash
+    assert.equal(st.account.id, cash);
+    // the petty box cannot also be the collections account
+    await petty.saveConfig({ ...(await petty.config()), collections_account_id: cash });
+    assert.equal((await petty.status(today)).collections, null);
+    await petty.saveConfig({ ...(await petty.config()), collections_account_id: null });
+    assert.equal((await petty.status(today)).collections, null, 'optional — off when not chosen');
+  });
+
   await t.test('staff-spend approval rule: only staff, only money out, only over the limit, only cash', () => {
     const { needsApproval } = require('../src/lib/petty');
     const cfg = { approval: { on: true, above: 500, cash_only: true } };

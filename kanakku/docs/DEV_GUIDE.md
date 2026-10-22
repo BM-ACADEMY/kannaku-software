@@ -173,7 +173,7 @@ Optional. Set `XAI_API_KEY`. Used for (a) parsing typed notes into a draft entry
 | `POST /auth/login/otp` · `/forgot` · `/reset` · `/2fa/setup` · `/2fa/enable` · `/2fa/disable` · `/logout-all` | public / logged in | 2-step login, password reset, log out everywhere |
 | `GET /calendar/feed/:token.ics` | private token, no login | iCalendar feed of payments due (Google Calendar "From URL") |
 | `GET/POST /calendar/settings` · `GET /calendar/upcoming?days` | admin (upcoming: accounts too) | calendar link on/off/new, what's due |
-| `GET /petty` · `PUT /petty/settings` · `POST /petty/topup` · `POST /petty/count` | admin, accounts (settings: admin) | petty cash status, float/low/approval settings, top-up transfer, cash count |
+| `GET /petty` · `PUT /petty/settings` · `POST /petty/topup` · `POST /petty/handover` · `POST /petty/count` | admin, accounts (settings: admin) | petty cash status, float/low/approval settings, top-up transfer, cash count |
 | `GET /portal/statement?month` | investor | own statement only |
 | `POST /webhooks/razorpay` | signature | Razorpay |
 | `/internal/*` | x-internal-key | n8n only |
