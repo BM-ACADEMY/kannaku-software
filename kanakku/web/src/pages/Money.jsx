@@ -245,7 +245,8 @@ function Rules() {
 }
 
 export default function Money() {
-  const [tab, setTab] = useState('balances');
+  // Opened from the home screen's petty cash card: it leaves the tab name in sessionStorage
+  const [tab, setTab] = useState(() => { try { const t = sessionStorage.getItem('moneyTab'); sessionStorage.removeItem('moneyTab'); return t || 'balances'; } catch { return 'balances'; } });
   return (
     <>
       <div className="page-head"><div><h1>Money</h1><p>What's in each account, and the bank statement matched against the Book.</p></div></div>

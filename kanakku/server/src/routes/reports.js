@@ -91,6 +91,8 @@ router.get('/dashboard', requireRole('admin', 'accounts', 'sales'), ah(async (re
       cash_waiting_account: p?.collections?.name || null,
       cash_low: !!p?.low,
       cash_balance: p?.balance ?? null,
+      cash_float: p?.float ?? null,
+      cash_box: p?.account?.name || null,
       bills_missing: p?.bills_missing?.count || 0,
     };
   }

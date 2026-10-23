@@ -550,3 +550,10 @@ details.integ-steps:not([open]) { gap: 0; }
 .slab.paid { background: var(--in-soft); color: #047857; border-color: #a7f3d0; }
 .slab.overdue { background: var(--out-soft); color: #b91c1c; border-color: #fecaca; }
 .slab.due, .slab.partial { background: var(--warn-soft); color: var(--warn); border-color: #fde68a; }
+
+/* ── Home: petty cash card ── */
+.petty { display: block; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; margin-bottom: 14px; }
+.petty:hover { border-color: #a1a1aa; }
+.petty-amt { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.petty-bar { height: 8px; border-radius: 99px; background: var(--muted-bg); overflow: hidden; margin: 10px 0 6px; }
+.petty-bar > i { display: block; height: 100%; border-radius: 99px; transition: width 0.6s cubic-bezier(0.2, 0.7, 0.2, 1); }

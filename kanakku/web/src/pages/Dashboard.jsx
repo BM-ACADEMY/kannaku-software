@@ -162,6 +162,20 @@ export default function Dashboard() {
         </div>
       ) : a && <div className="attn-ok">✓ Nothing needs your action right now.</div>}
 
+      {a && a.cash_balance != null && (
+        <button className="card card-pad petty" onClick={() => { try { sessionStorage.setItem('moneyTab', 'petty'); } catch { /* private window */ } go('money'); }}>
+          <div className="row">
+            <div><div className="small muted">Petty cash box</div><div className="petty-amt">{inr(a.cash_balance)}</div></div>
+            <span className="spacer" /><span className="attn-go">Open Petty cash →</span>
+          </div>
+          {a.cash_float > 0 && (
+            <>
+              <div className="petty-bar"><i style={{ width: `${Math.min(100, (Math.max(0, a.cash_balance) / a.cash_float) * 100)}%`, background: a.cash_low ? 'var(--out)' : 'var(--in)' }} /></div>
+              <div className="small muted">Float {inr(a.cash_float)}{a.cash_low ? ' · Low — top up from the bank' : Number(a.cash_float) - a.cash_balance > 0 ? ` · top up ${inr(a.cash_float - a.cash_balance)} to refill` : ' · full'}</div>
+            </>
+          )}
+        </button>
+      )}
       {m && data.forecast?.runs_out_on && (
         <div className="banner bad">Cash may run short on {fmtDate(data.forecast.runs_out_on)} (lowest {inr(data.forecast.low.balance)}).<button className="btn sm" onClick={() => go('reports')}>See forecast</button></div>
       )}
