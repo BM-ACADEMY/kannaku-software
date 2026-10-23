@@ -16,7 +16,8 @@ router.get('/dues-reminders', ah(async (req, res) => {
     FROM documents d JOIN customers c ON c.id=d.customer_id JOIN brands b ON b.id=d.brand_id
     WHERE d.doc_type='invoice' AND d.status IN ('unpaid','partial') AND d.due_date IS NOT NULL
       AND d.due_date <= CURRENT_DATE + $1::int AND c.phone IS NOT NULL
-      AND (d.last_reminded_at IS NULL OR d.last_reminded_at < now() - interval '3 days')`, [days]);
+      AND (d.last_reminded_at IS NULL OR d.last_reminded_at < now() - interval '3 days')
+      AND NOT EXISTS (SELECT 1 FROM payment_plans pp WHERE pp.document_id=d.id)`, [days]);
   const man = await query(`SELECT 'due' AS kind, d.id, NULL AS number, d.party, d.phone, (d.amount-d.amount_settled) AS balance,
       d.due_date, b.name AS brand_name
     FROM dues d JOIN brands b ON b.id=d.brand_id

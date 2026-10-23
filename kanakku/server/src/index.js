@@ -54,6 +54,7 @@ app.use('/api/autopilot', requireAuth, require('./routes/autopilot'));
 app.use('/api', requireAuth, require('./routes/meta'));
 app.use('/api/entries', requireAuth, require('./routes/entries'));
 app.use('/api/deals', requireAuth, require('./routes/deals'));
+app.use('/api/plans', requireAuth, require('./routes/plans'));
 app.use('/api/dues', requireAuth, require('./routes/dues'));
 app.use('/api/investors', requireAuth, require('./routes/investors'));
 app.use('/api/reports', requireAuth, require('./routes/reports'));

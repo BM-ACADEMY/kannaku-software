@@ -3,6 +3,49 @@ import { api } from '../lib/api.js';
 import { inr, fmtDate, fmtMonth, today } from '../lib/format.js';
 import { BrandTag, Empty, Err, Loader, Money, Stat, useApp, useAsync } from '../components/ui.jsx';
 
+const STATE = { paid: ['Paid'], due: ['Due today'], overdue: ['Overdue'], partial: ['Part paid'], upcoming: ['Upcoming'] };
+
+// Instalment plans: progress per plan, and one-tap recording of the next instalment
+function PaymentPlans({ plans, reload }) {
+  const [busy, setBusy] = useState(null);
+  const [err, setErr] = useState('');
+  const pay = async (plan, slab) => {
+    if (!window.confirm(`Record ₹${Math.round(slab.left).toLocaleString('en-IN')} received from ${plan.customer} for instalment ${slab.position}?`)) return;
+    setBusy(slab.id); setErr('');
+    try { await api(`/plans/slabs/${slab.id}/pay`, { method: 'POST', body: {} }); reload(); }
+    catch (e) { setErr(e.message); }
+    finally { setBusy(null); }
+  };
+  return (
+    <div className="card card-pad">
+      <div className="row" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>Payment plans</h3><span className="spacer" /><span className="small muted">Split invoices</span></div>
+      <Err error={err} />
+      {plans.length === 0 && <Empty>No instalment plans. Open an invoice in Deals and press “Split into instalments”.</Empty>}
+      {plans.map((pl) => {
+        const pct = pl.total ? Math.min(100, Math.round((pl.paid / pl.total) * 100)) : 0;
+        return (
+          <div key={pl.id} className="plan">
+            <div className="row"><b className="ellipsis">{pl.customer}</b><span className="spacer" /><span className="num">{inr(pl.paid)} of {inr(pl.total)}</span></div>
+            <div className="small muted">{pl.name} · {pl.number} · {pl.brand}{pl.overdue ? ` · ${pl.overdue} overdue` : ''}</div>
+            <div className="plan-bar"><i style={{ width: `${pct}%` }} /></div>
+            <div className="plan-slabs">
+              {pl.slabs.map((s) => (
+                <span key={s.id} className={`slab ${s.state}`}>{s.position} · {inr(s.amount)} · {new Date(`${s.due_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} · {STATE[s.state][0]}</span>
+              ))}
+            </div>
+            {pl.next && (
+              <div className="row" style={{ marginTop: 8 }}>
+                <span className="small">Next: instalment {pl.next.position} · {inr(pl.next.left)}</span><span className="spacer" />
+                <button className="btn sm green" disabled={busy === pl.next.id} onClick={() => pay(pl, pl.next)}>{busy === pl.next.id ? 'Saving…' : 'Record received'}</button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Top accounts with each account's change over the last 7 days. Tap two to compare them.
 function TopAccounts({ accounts }) {
   const [sel, setSel] = useState([]);
@@ -84,7 +127,7 @@ function Activity() {
 
 export default function Dashboard() {
   const { user, go } = useApp();
-  const { data, error } = useAsync(() => api('/reports/dashboard'), []);
+  const { data, error, reload } = useAsync(() => api('/reports/dashboard'), []);
   if (error) return <Err error={error} />;
   if (!data) return <Loader />;
   const m = data.month;
@@ -192,6 +235,11 @@ export default function Dashboard() {
         <div className="grid g2" style={{ marginTop: 14 }}>
           <TopAccounts accounts={data.accounts} />
           {user.role === 'admin' && <Activity />}
+        </div>
+      )}
+      {m && data.plans && (
+        <div className="grid" style={{ marginTop: 14 }}>
+          <PaymentPlans plans={data.plans} reload={reload} />
         </div>
       )}
     </>

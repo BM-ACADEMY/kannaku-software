@@ -219,6 +219,30 @@ export function DocSheet({ doc }) {
   );
 }
 
+// Split an invoice into instalments (e.g. a 3-month course fee paid in 3 parts). One invoice; each part is a due date.
+function InstalmentForm({ doc, onClose, onSaved }) {
+  const nextMonth = (() => { const d = new Date(); d.setMonth(d.getMonth() + 1, 1); return d.toISOString().slice(0, 10); })();
+  const [p, setP] = useState({ count: 3, first_due: nextMonth, every_months: 1, name: '' });
+  const [error, setError] = useState('');
+  const each = Math.floor((Number(doc.total) / Math.max(1, Number(p.count))) * 100) / 100;
+  const save = async () => {
+    try { onSaved(await api(`/plans/from-invoice/${doc.id}`, { method: 'POST', body: { ...p, count: Number(p.count), every_months: Number(p.every_months), name: p.name || null } })); }
+    catch (e) { setError(e.message); }
+  };
+  return (
+    <Modal title={`Instalments for ${doc.number}`} onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn green" onClick={save} disabled={!(Number(p.count) >= 2) || !p.first_due}>Create instalments</button></>}>
+      <Err error={error} />
+      <div className="note-box">Total {inr2(doc.total)} is split into {p.count || '—'} parts of about {inr2(each)} each. The invoice stays as one; each part is recorded as it comes in.</div>
+      <div className="grid g2">
+        <Field label="Number of parts"><select className="input" value={p.count} onChange={(e) => setP({ ...p, count: e.target.value })}>{[2, 3, 4, 5, 6, 9, 12].map((n) => <option key={n} value={n}>{n}</option>)}</select></Field>
+        <Field label="Every"><select className="input" value={p.every_months} onChange={(e) => setP({ ...p, every_months: e.target.value })}><option value="1">month</option><option value="2">2 months</option><option value="3">3 months</option></select></Field>
+        <Field label="First part due"><input className="input" type="date" value={p.first_due} onChange={(e) => setP({ ...p, first_due: e.target.value })} /></Field>
+        <Field label="Name (optional)"><input className="input" placeholder="e.g. 3-month course fee" value={p.name} onChange={(e) => setP({ ...p, name: e.target.value })} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
 function PaymentForm({ doc, onClose, onSaved }) {
   const { boot } = useApp();
   const isBill = doc.doc_type === 'bill';
@@ -334,7 +358,8 @@ function DocView({ id, onClose, onChanged }) {
           <button className="btn primary" onClick={async () => { const r = await act('convert', {}, 'Invoice created'); if (r) setDoc(r); }}>Convert to invoice</button>}
         {type === 'invoice' && canMoney && doc.status !== 'cancelled' && Number(doc.total) - Number(doc.amount_credited) > 0.01 &&
           <button className="btn" onClick={() => setMode('credit')}>Credit note</button>}
-        {['invoice', 'bill'].includes(type) && canMoney && ['unpaid', 'partial'].includes(doc.status) && <button className="btn green" onClick={() => setMode('pay')}>{type === 'bill' ? 'Pay bill' : 'Record payment'}</button>}
+        {type === 'invoice' && canMoney && doc.status === 'unpaid' && !doc.has_plan && !(doc.payments?.length) && <button className="btn" onClick={() => setMode('plan')}>Split into instalments</button>}
+        {['invoice', 'bill'].includes(type) && canMoney && ['unpaid', 'partial'].includes(doc.status) && !doc.has_plan && <button className="btn green" onClick={() => setMode('pay')}>{type === 'bill' ? 'Pay bill' : 'Record payment'}</button>}
         {type === 'credit_note' && canMoney && doc.balance > 0.009 && doc.status !== 'cancelled' && <button className="btn green" onClick={() => setMode('pay')}>Refund {inr2(doc.balance)}</button>}
       </>}>
         <Err error={error} />
@@ -347,6 +372,7 @@ function DocView({ id, onClose, onChanged }) {
         {canMoney && <Attachments entity="document" id={doc.id} />}
       </Modal>
       {mode === 'pay' && <PaymentForm doc={doc} onClose={() => setMode(null)} onSaved={(r) => { setDoc(r); setMode(null); onChanged(); notify(type === 'credit_note' ? 'Refund recorded' : 'Payment recorded'); }} />}
+      {mode === 'plan' && <InstalmentForm doc={doc} onClose={() => setMode(null)} onSaved={() => { setMode(null); onChanged(); notify('Instalments set — see Dashboard → Payment plans'); }} />}
       {mode === 'credit' && <CreditNoteForm inv={doc} onClose={() => setMode(null)} onSaved={(r) => { setMode(null); onChanged(); notify(`${r.number} issued`); load(r.id); }} />}
       {mode === 'edit' && <DocEditor docType={type} initial={{ ...doc, customer_id: doc.customer_id, due_date: doc.due_date || '' }}
         onClose={() => setMode(null)} onSaved={(r) => { setDoc(r); setMode(null); onChanged(); notify('Saved'); }} />}

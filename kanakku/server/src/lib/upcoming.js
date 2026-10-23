@@ -16,7 +16,8 @@ async function upcoming({ from = todayIST(), to, includeOverdue = true, today = 
       (d.total-d.amount_paid-d.amount_credited) AS bal
     FROM documents d JOIN customers c ON c.id=d.customer_id JOIN brands b ON b.id=d.brand_id
     WHERE d.doc_type IN ('invoice','bill','credit_note') AND d.status NOT IN ('cancelled','paid','refunded','issued')
-      AND d.total-d.amount_paid-d.amount_credited > 0.009`)).rows;
+      AND d.total-d.amount_paid-d.amount_credited > 0.009
+      AND NOT EXISTS (SELECT 1 FROM payment_plans pp WHERE pp.document_id=d.id)`)).rows;
   for (const d of docs) {
     const date = String(d.due_date || d.doc_date).slice(0, 10);
     if (date > to || (!includeOverdue && date < from)) continue;
@@ -25,6 +26,18 @@ async function upcoming({ from = todayIST(), to, includeOverdue = true, today = 
       kind: d.doc_type === 'bill' ? 'Bill' : d.doc_type === 'credit_note' ? 'Refund' : 'Invoice',
       title: `${d.doc_type === 'bill' ? 'Pay bill' : d.doc_type === 'credit_note' ? 'Refund' : 'Collect'} · ${d.party}`,
       ref: d.number + (d.vendor_ref ? ` (${d.vendor_ref})` : '') });
+  }
+  // Instalment plans: each unpaid slab is its own item on its due date
+  const slabs = (await query(`SELECT s.id, s.position, s.due_date, (s.amount-s.paid_amount) AS bal, d.number, c.name AS party, b.name AS brand_name,
+      (SELECT COUNT(*) FROM plan_slabs x WHERE x.plan_id=p.id)::int AS n
+    FROM plan_slabs s JOIN payment_plans p ON p.id=s.plan_id JOIN documents d ON d.id=p.document_id
+      JOIN customers c ON c.id=d.customer_id JOIN brands b ON b.id=d.brand_id
+    WHERE d.status IN ('unpaid','partial') AND s.paid_amount < s.amount - 0.009`)).rows;
+  for (const s of slabs) {
+    const date = String(s.due_date).slice(0, 10);
+    if (date > to || (!includeOverdue && date < from)) continue;
+    items.push({ key: `slab-${s.id}`, date, direction: 'in', amount: Number(s.bal), party: s.party, brand: s.brand_name, kind: 'Instalment',
+      title: `Collect · ${s.party}`, ref: `${s.number} · instalment ${s.position} of ${s.n}` });
   }
   const dues = (await query(`SELECT d.id, d.direction, d.party, d.note, d.due_date, (d.amount-d.amount_settled) AS bal, b.name AS brand_name
     FROM dues d JOIN brands b ON b.id=d.brand_id WHERE d.status='open' AND d.document_id IS NULL AND d.due_date IS NOT NULL`)).rows;

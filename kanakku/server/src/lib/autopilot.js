@@ -155,7 +155,8 @@ const JOBS = {
     const inv = (await query(`SELECT 'invoice' AS kind, d.id, d.number, c.name AS party, c.phone, (d.total-d.amount_paid-d.amount_credited) AS balance, d.due_date, b.name AS brand_name
       FROM documents d JOIN customers c ON c.id=d.customer_id JOIN brands b ON b.id=d.brand_id
       WHERE d.doc_type='invoice' AND d.status IN ('unpaid','partial') AND d.due_date IS NOT NULL AND d.due_date <= $1::date + $2::int
-        AND c.phone IS NOT NULL AND (d.last_reminded_at IS NULL OR d.last_reminded_at < now() - make_interval(days => $3::int))`, [now.date, days, repeat])).rows;
+        AND c.phone IS NOT NULL AND (d.last_reminded_at IS NULL OR d.last_reminded_at < now() - make_interval(days => $3::int))
+        AND NOT EXISTS (SELECT 1 FROM payment_plans pp WHERE pp.document_id=d.id)`, [now.date, days, repeat])).rows;
     const man = (await query(`SELECT 'due' AS kind, d.id, NULL AS number, d.party, d.phone, (d.amount-d.amount_settled) AS balance, d.due_date, b.name AS brand_name
       FROM dues d JOIN brands b ON b.id=d.brand_id
       WHERE d.status='open' AND d.direction='receivable' AND d.document_id IS NULL AND d.phone IS NOT NULL AND d.due_date <= $1::date + $2::int
@@ -168,7 +169,10 @@ const JOBS = {
         await query(`UPDATE ${r.kind === 'invoice' ? 'documents' : 'dues'} SET last_reminded_at=now() WHERE id=$1`, [r.id]);
       } else failed.push(`${r.party}: ${res.error}`);
     }
-    const total = inv.length + man.length;
+    // Instalment plans: one message per plan, for its next unpaid instalment
+    const pr = await require('./plans').remindPlans(cfg, now);
+    sent += pr.sent; failed.push(...pr.failed);
+    const total = inv.length + man.length + pr.total;
     return { summary: total ? `${sent} of ${total} reminders sent${failed.length ? ` · ${failed.length} failed (${failed[0]})` : ''}` : 'No one to remind today', detail: { failed }, ok: !failed.length || sent > 0 };
   },
 

@@ -11,6 +11,7 @@ const { parse } = require('../lib/http');
 
 const { todayIST: today } = require('../lib/books');
 const petty = require('../lib/petty');
+const { listPlans } = require('../lib/plans');
 
 router.get('/pnl', requireRole('admin', 'accounts'), ah(async (req, res) => {
   const { from, to } = req.query;
@@ -76,6 +77,7 @@ router.get('/dashboard', requireRole('admin', 'accounts', 'sales'), ah(async (re
       forecast: fc ? { low: fc.low, runs_out_on: fc.runs_out_on, end_balance: fc.end_balance, expected_in: fc.expected_in, expected_out: fc.expected_out } : null };
     // "Needs your action" counts — admin and accounts only (never sent to sales or investors)
     const p = await petty.status().catch(() => null);
+    extra.plans = await listPlans(t).catch(() => []);
     // Top accounts with the change over the last 7 days (admin and accounts only)
     const weekAgo = new Date(Date.parse(`${t}T00:00:00Z`) - 7 * 864e5).toISOString().slice(0, 10);
     const prevBal = await accountBalances(weekAgo).catch(() => []);

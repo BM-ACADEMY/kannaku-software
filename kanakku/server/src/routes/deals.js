@@ -88,7 +88,8 @@ async function nextNumber(client, brandId, docType, docDate, prefix) {
 async function loadDoc(id, client) {
   const q = client ? client.query.bind(client) : query;
   const { rows } = await q(`SELECT d.*, b.name AS brand_name, b.code AS brand_code, b.color AS brand_color, cat.name AS category_name,
-    to_jsonb(c.*) AS customer, ag.number AS against_number
+    to_jsonb(c.*) AS customer, ag.number AS against_number,
+    EXISTS (SELECT 1 FROM payment_plans pp WHERE pp.document_id=d.id) AS has_plan
     FROM documents d JOIN brands b ON b.id=d.brand_id JOIN customers c ON c.id=d.customer_id
     LEFT JOIN categories cat ON cat.id=d.category_id LEFT JOIN documents ag ON ag.id=d.against_id WHERE d.id=$1`, [id]);
   if (!rows[0]) throw new HttpError(404, 'Document not found');
@@ -268,6 +269,7 @@ router.post('/documents/:id/payments', requireRole(...money), ah(async (req, res
     account_id: z.coerce.number().nullable().optional(), ref: z.string().nullable().optional() }), req.body);
   const doc = await loadDoc(req.params.id);
   if (!['invoice', 'bill'].includes(doc.doc_type) || doc.status === 'cancelled') throw new HttpError(400, 'Payments can only be recorded on an active invoice or bill');
+  if (doc.has_plan) throw new HttpError(400, 'This invoice is paid in instalments — record each instalment from the Dashboard');
   await tx((client) => recordPayment(client, doc, { ...p, userId: req.user.id }));
   await audit(req.user.id, 'payment', doc.doc_type, doc.id, p);
   res.json(await loadDoc(doc.id));

@@ -539,3 +539,14 @@ details.integ-steps:not([open]) { gap: 0; }
 .act-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue, #2563eb); margin-top: 6px; flex: none; }
 .card.card-pad { animation: dash-rise 0.5s both; }
 @media (prefers-reduced-motion: reduce) { .acc-bar > i, .acc-compare, .act-row, .card.card-pad { animation: none; } }
+
+/* ── Home: payment plans (instalments) ── */
+.plan { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.plan:last-child { border-bottom: 0; }
+.plan-bar { height: 8px; border-radius: 99px; background: var(--muted-bg); overflow: hidden; margin: 8px 0; }
+.plan-bar > i { display: block; height: 100%; border-radius: 99px; background: var(--in); transition: width 0.6s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.plan-slabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.slab { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); white-space: nowrap; }
+.slab.paid { background: var(--in-soft); color: #047857; border-color: #a7f3d0; }
+.slab.overdue { background: var(--out-soft); color: #b91c1c; border-color: #fecaca; }
+.slab.due, .slab.partial { background: var(--warn-soft); color: var(--warn); border-color: #fde68a; }

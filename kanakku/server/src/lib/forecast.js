@@ -38,7 +38,17 @@ async function forecast(days = 60, today = require('./books').todayIST()) {
   const docs = (await query(`SELECT d.doc_type, d.number, d.due_date, d.doc_date, c.name AS party, (d.total-d.amount_paid-d.amount_credited) AS bal
     FROM documents d JOIN customers c ON c.id=d.customer_id
     WHERE d.doc_type IN ('invoice','bill','credit_note') AND d.status NOT IN ('cancelled','paid','refunded','issued')
-      AND d.total-d.amount_paid-d.amount_credited > 0.009`)).rows;
+      AND d.total-d.amount_paid-d.amount_credited > 0.009
+      AND NOT EXISTS (SELECT 1 FROM payment_plans pp WHERE pp.document_id=d.id)`)).rows;
+  // Instalment plans: each unpaid slab lands on its own due date
+  const slabs = (await query(`SELECT s.due_date, (s.amount-s.paid_amount) AS bal, d.number, c.name AS party, s.position
+    FROM plan_slabs s JOIN payment_plans p ON p.id=s.plan_id JOIN documents d ON d.id=p.document_id JOIN customers c ON c.id=d.customer_id
+    WHERE d.status IN ('unpaid','partial') AND s.paid_amount < s.amount - 0.009`)).rows;
+  for (const s of slabs) {
+    let date = String(s.due_date).slice(0, 10);
+    if (date < today) date = addDays(today, 7); // overdue instalment: hope for a week, like an overdue invoice
+    ev.push({ date, amount: Number(s.bal), what: `Instalment ${s.position} · ${s.number} · ${s.party}` });
+  }
   for (const d of docs) {
     let date = d.due_date ? String(d.due_date).slice(0, 10) : addDays(String(d.doc_date).slice(0, 10), 7);
     const late = date < today;

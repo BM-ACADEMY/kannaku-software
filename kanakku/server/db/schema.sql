@@ -410,3 +410,23 @@ ALTER TABLE entries ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL 
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS approved_by INT REFERENCES users(id);
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS entries_nobill_idx ON entries(entry_date) WHERE no_bill AND deleted_at IS NULL;
+
+-- ───────────── Payment plans: one invoice paid in instalments (e.g. a 3-month course fee in 3 parts) ─────────────
+CREATE TABLE IF NOT EXISTS payment_plans (
+  id          SERIAL PRIMARY KEY,
+  document_id INT NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  created_by  INT REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS plan_slabs (
+  id               SERIAL PRIMARY KEY,
+  plan_id          INT NOT NULL REFERENCES payment_plans(id) ON DELETE CASCADE,
+  position         INT NOT NULL,
+  amount           NUMERIC(14,2) NOT NULL,
+  due_date         DATE NOT NULL,
+  paid_amount      NUMERIC(14,2) NOT NULL DEFAULT 0,
+  last_reminded_at TIMESTAMPTZ,
+  UNIQUE (plan_id, position)
+);
+CREATE INDEX IF NOT EXISTS plan_slabs_due_idx ON plan_slabs(due_date) WHERE paid_amount < amount;
