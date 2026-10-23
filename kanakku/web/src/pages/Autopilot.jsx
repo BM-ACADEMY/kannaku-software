@@ -235,15 +235,69 @@ function Log({ data }) {
   );
 }
 
+const DAY_OPTIONS = [...Array.from({ length: 31 }, (_, i) => i + 1), 'last'];
+const QUICK = ['EB bill', 'Water', 'Internet', 'Phone', 'Shop rent', 'Gas'];
+const newId = (name) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'item'}-${Date.now().toString(36).slice(-4)}`;
+
+// Monthly dates: add, change or remove the day and amount of each money date. Reminders use this list.
+function MonthlyDates() {
+  const { user, notify } = useApp();
+  const admin = user.role === 'admin';
+  const { data, error } = useAsync(() => api('/autopilot/obligations'), []);
+  const [items, setItems] = useState(null);
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  if (error) return <Err error={error} />;
+  if (!data) return <Loader />;
+  const list = items || data;
+  const set = (id, patch) => setItems(list.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+  const add = (label) => { const n = (label || name).trim(); if (!n) return; setItems([...list, { id: newId(n), name: n, day: 10, amount: 0 }]); setName(''); };
+  const remove = (id) => { if (window.confirm('Remove this date? Reminders for it stop.')) setItems(list.filter((i) => i.id !== id)); };
+  const save = async () => {
+    setSaving(true);
+    try { const r = await api('/autopilot/obligations', { method: 'PUT', body: { items: list.map((i) => ({ ...i, amount: Number(i.amount) || 0 })) } }); setItems(null); notify('Saved — reminders updated'); return r; }
+    catch (e) { notify(e.message); } finally { setSaving(false); }
+  };
+  return (
+    <div className="card card-pad">
+      <div className="row" style={{ marginBottom: 6 }}><h3 style={{ margin: 0 }}>Monthly dates</h3><span className="spacer" /><span className="small muted">Alert 3 days before and on the day · 9:30 am</span></div>
+      <div className="small muted" style={{ marginBottom: 12 }}>Rent, bills, statutory payments, investor payouts and salaries. Change the day or amount any time; leave amount 0 if it changes each month.</div>
+      {list.map((i) => (
+        <div key={i.id} className="obl-row">
+          <input className="input" value={i.name} disabled={!admin} onChange={(e) => set(i.id, { name: e.target.value })} />
+          <select className="input" value={i.day} disabled={!admin} onChange={(e) => set(i.id, { day: e.target.value === 'last' ? 'last' : Number(e.target.value) })}>
+            {DAY_OPTIONS.map((d) => <option key={d} value={d}>{d === 'last' ? 'Last day' : `${d}${[1, 21, 31].includes(d) ? 'st' : [2, 22].includes(d) ? 'nd' : [3, 23].includes(d) ? 'rd' : 'th'}`}</option>)}
+          </select>
+          <input className="input" type="number" min="0" placeholder="Amount" value={i.amount} disabled={!admin} onChange={(e) => set(i.id, { amount: e.target.value })} />
+          {admin && <button className="btn sm" onClick={() => remove(i.id)} aria-label={`Remove ${i.name}`}>✕</button>}
+        </div>
+      ))}
+      {admin && (
+        <>
+          <div className="row" style={{ marginTop: 12, flexWrap: 'wrap', gap: 8 }}>
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Add a monthly date, e.g. Shop rent" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
+            <button className="btn" onClick={() => add()} disabled={!name.trim()}>Add</button>
+          </div>
+          <div className="row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
+            {QUICK.filter((q) => !list.some((i) => i.name === q)).map((q) => <button key={q} className="chip-btn" onClick={() => add(q)}>+ {q}</button>)}
+          </div>
+          <div className="row" style={{ marginTop: 14 }}><span className="spacer" /><button className="btn primary" onClick={save} disabled={!items || saving}>{saving ? 'Saving…' : 'Save dates'}</button></div>
+        </>
+      )}
+      {!admin && <div className="small muted" style={{ marginTop: 10 }}>Only the admin can change these.</div>}
+    </div>
+  );
+}
+
 export default function Autopilot() {
   const [tab, setTab] = useState('jobs');
   const { data, error, reload } = useAsync(() => api('/autopilot'), []);
   return (
     <>
       <div className="page-head"><div><h1>Autopilot</h1><p>What Kanakku does by itself every day — and what it did.</p></div></div>
-      <div className="tabs">{[['jobs', 'Daily jobs'], ['coming', 'Coming up & calendar'], ['recurring', 'Recurring entries'], ['log', 'What it did']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
+      <div className="tabs">{[['jobs', 'Daily jobs'], ['dates', 'Monthly dates'], ['coming', 'Coming up & calendar'], ['recurring', 'Recurring entries'], ['log', 'What it did']].map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
       <Err error={error} />
-      {tab === 'coming' ? <Coming /> : tab === 'recurring' ? <Recurring /> : !data ? <Loader /> : tab === 'jobs' ? <Jobs data={data} reload={reload} /> : <Log data={data} />}
+      {tab === 'dates' ? <MonthlyDates /> : tab === 'coming' ? <Coming /> : tab === 'recurring' ? <Recurring /> : !data ? <Loader /> : tab === 'jobs' ? <Jobs data={data} reload={reload} /> : <Log data={data} />}
     </>
   );
 }

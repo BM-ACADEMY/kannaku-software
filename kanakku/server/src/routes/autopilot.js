@@ -6,6 +6,25 @@ const { ah, parse, HttpError } = require('../lib/http');
 const { requireRole } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
 const ap = require('../lib/autopilot');
+const obl = require('../lib/obligations');
+
+// Monthly money dates (rent, EB, water, statutory, investor payouts, salaries)
+router.get('/obligations', requireRole('admin', 'accounts'), ah(async (_req, res) => {
+  res.json(await obl.schedule());
+}));
+
+router.put('/obligations', requireRole('admin'), ah(async (req, res) => {
+  const { items } = parse(z.object({ items: z.array(z.object({
+    id: z.string().regex(/^[a-z0-9-]{1,50}$/), name: z.string().trim().min(1).max(60),
+    day: z.union([z.coerce.number().int().min(1).max(31), z.literal('last')]),
+    amount: z.coerce.number().min(0).max(100000000).default(0),
+  })).max(40) }), req.body);
+  const ids = new Set(items.map((i) => i.id));
+  if (ids.size !== items.length) throw new HttpError(400, 'Two items have the same id');
+  await query(`INSERT INTO settings (key,value) VALUES ('obligations',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(items)]);
+  await audit(req.user.id, 'update', 'settings', null, { key: 'obligations', count: items.length });
+  res.json(items);
+}));
 
 router.get('/', requireRole('admin', 'accounts'), ah(async (_req, res) => {
   const s = await ap.settings();
