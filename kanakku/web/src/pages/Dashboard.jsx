@@ -1,7 +1,86 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { api } from '../lib/api.js';
 import { inr, fmtDate, fmtMonth, today } from '../lib/format.js';
 import { BrandTag, Empty, Err, Loader, Money, Stat, useApp, useAsync } from '../components/ui.jsx';
+
+// Top accounts with each account's change over the last 7 days. Tap two to compare them.
+function TopAccounts({ accounts }) {
+  const [sel, setSel] = useState([]);
+  const list = [...accounts].sort((x, y) => y.balance - x.balance);
+  const max = Math.max(1, ...list.map((x) => Math.abs(x.balance)));
+  const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((v) => v !== id) : [...s, id].slice(-2)));
+  const [a, b] = sel.map((id) => list.find((x) => x.id === id)).filter(Boolean);
+  return (
+    <div className="card card-pad">
+      <div className="row" style={{ marginBottom: 10 }}>
+        <h3 style={{ margin: 0 }}>Top accounts</h3><span className="spacer" />
+        <span className="small muted">{sel.length === 2 ? 'Comparing two' : 'Tap two to compare'}</span>
+      </div>
+      <div>
+        {list.map((x, i) => (
+          <button key={x.id} className={`acc-row ${sel.includes(x.id) ? 'on' : ''}`} onClick={() => toggle(x.id)}>
+            <span className="acc-name">{x.name}</span>
+            <span className="acc-bar"><i style={{ width: `${(Math.max(0, x.balance) / max) * 100}%`, animationDelay: `${i * 0.08}s` }} /></span>
+            <span className="acc-val num">
+              {inr(x.balance)}
+              <small className={x.change7 >= 0 ? 'in' : 'out'}>{x.change7 >= 0 ? ' ▲ ' : ' ▼ '}{inr(Math.abs(x.change7))} in 7 days</small>
+            </span>
+          </button>
+        ))}
+      </div>
+      {a && b && (
+        <div className="acc-compare">
+          <div><span className="muted small">{a.name}</span><b>{inr(a.balance)}</b></div>
+          <div className="acc-vs">vs</div>
+          <div style={{ textAlign: 'right' }}><span className="muted small">{b.name}</span><b>{inr(b.balance)}</b>
+            <div className="small muted">Difference {inr(Math.abs(a.balance - b.balance))}</div></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ACTION_WORDS = { create: 'added', update: 'changed', delete: 'deleted', confirm: 'confirmed', approve: 'approved', close_books: 'closed the books' };
+const ENTITY_PAGE = { entry: 'book', entries: 'book', account: 'money', petty_cash: 'money', document: 'deals', investor: 'investors', settings: 'settings', user: 'settings', brand: 'settings' };
+
+// Activity history: who changed what, newest first. Admin only (the audit endpoint is admin-only).
+function Activity() {
+  const { go } = useApp();
+  const { data, error } = useAsync(() => api('/audit?limit=8'), []);
+  const [more, setMore] = useState([]);
+  const [next, setNext] = useState(undefined);
+  const [busy, setBusy] = useState(false);
+  if (error) return <div className="card card-pad"><Err error={error} /></div>;
+  if (!data) return <div className="card card-pad"><Loader /></div>;
+  const rows = [...data.rows, ...more];
+  const cursor = next !== undefined ? next : data.next;
+  const loadMore = async () => {
+    setBusy(true);
+    try { const r = await api(`/audit?limit=8&before=${cursor}`); setMore((m) => [...m, ...r.rows]); setNext(r.next); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card card-pad">
+      <div className="row" style={{ marginBottom: 6 }}><h3 style={{ margin: 0 }}>Activity</h3><span className="spacer" /><span className="small muted">Newest first</span></div>
+      {rows.length === 0 && <Empty>No activity yet.</Empty>}
+      {rows.map((r) => {
+        const page = ENTITY_PAGE[r.entity];
+        const when = new Date(r.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+        return (
+          <div key={r.id} className="act-row" onClick={() => page && go(page)} style={{ cursor: page ? 'pointer' : 'default' }}>
+            <span className="act-dot" />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div><b>{r.user_name || 'Autopilot'}</b> {ACTION_WORDS[r.action] || r.action} {r.entity.replace(/_/g, ' ')}{r.entity_id ? ` #${r.entity_id}` : ''}</div>
+              <div className="small muted">{when}</div>
+            </div>
+          </div>
+        );
+      })}
+      {cursor && rows.length > 0 && (
+        <button className="btn sm" style={{ marginTop: 10 }} disabled={busy} onClick={loadMore}>{busy ? 'Loading…' : 'Show more'}</button>
+      )}
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const { user, go } = useApp();
@@ -9,7 +88,20 @@ export default function Dashboard() {
   if (error) return <Err error={error} />;
   if (!data) return <Loader />;
   const m = data.month;
-  const maxNet = m ? Math.max(1, ...m.brands.map((b) => Math.abs(b.net))) : 1;
+  const a = data.attention; // only sent to admin and accounts
+  // One scale for every brand, so the bars can be compared
+  const maxVal = m ? Math.max(1, ...m.brands.flatMap((b) => [b.income, b.expense])) : 1;
+
+  // Things that need a person today, most urgent first
+  const items = [];
+  if (a) {
+    if (a.cash_waiting > 0) items.push({ tone: 'bad', text: `${inr(a.cash_waiting)} cash from before today not handed over`, to: 'money', btn: 'Open' });
+    if (a.cash_low) items.push({ tone: 'warn', text: `Petty cash box is low (${inr(a.cash_balance)})`, to: 'money', btn: 'Top up' });
+    if (a.pending_approval > 0) items.push({ tone: 'warn', text: `${a.pending_approval} staff spend${a.pending_approval === 1 ? '' : 's'} waiting for approval`, to: 'book', btn: 'Review' });
+    if (data.pending_count > 0) items.push({ tone: 'warn', text: `${data.pending_count} autopilot entr${data.pending_count === 1 ? 'y' : 'ies'} to confirm`, to: 'book', btn: 'Confirm' });
+    if (a.bills_missing > 0) items.push({ tone: 'warn', text: `${a.bills_missing} cash spend${a.bills_missing === 1 ? '' : 's'} with no bill photo`, to: 'money', btn: 'Open' });
+    if (data.unmatched_bank > 0) items.push({ tone: 'info', text: `${data.unmatched_bank} bank line${data.unmatched_bank === 1 ? '' : 's'} to sort`, to: 'money', btn: 'Sort' });
+  }
 
   return (
     <>
@@ -17,14 +109,16 @@ export default function Dashboard() {
         <div><h1>Vanakkam, {user.name.split(' ')[0]}</h1><p>{fmtDate(today())} · Afra Ventures</p></div>
       </div>
 
-      {m && (data.pending_count > 0 || data.unmatched_bank > 0) && (
-        <div className="banner info">
-          <span>{[data.pending_count > 0 && `${data.pending_count} entr${data.pending_count === 1 ? 'y' : 'ies'} from autopilot waiting to be confirmed`,
-            data.unmatched_bank > 0 && `${data.unmatched_bank} bank line${data.unmatched_bank === 1 ? '' : 's'} not sorted`].filter(Boolean).join(' · ')}</span>
-          {data.pending_count > 0 && <button className="btn sm" onClick={() => go('book')}>Open Book</button>}
-          {data.unmatched_bank > 0 && <button className="btn sm" style={{ marginLeft: data.pending_count ? 0 : 'auto' }} onClick={() => go('money')}>Sort bank</button>}
+      {items.length > 0 ? (
+        <div className="attn-row" role="list" aria-label="Needs your action">
+          {items.map((it) => (
+            <button key={it.text} role="listitem" className={`attn ${it.tone}`} onClick={() => go(it.to)}>
+              <span>{it.text}</span><span className="attn-go">{it.btn} →</span>
+            </button>
+          ))}
         </div>
-      )}
+      ) : a && <div className="attn-ok">✓ Nothing needs your action right now.</div>}
+
       {m && data.forecast?.runs_out_on && (
         <div className="banner bad">Cash may run short on {fmtDate(data.forecast.runs_out_on)} (lowest {inr(data.forecast.low.balance)}).<button className="btn sm" onClick={() => go('reports')}>See forecast</button></div>
       )}
@@ -46,16 +140,22 @@ export default function Dashboard() {
       {m && (
         <div className="grid g2">
           <div className="card card-pad">
-            <h3>This month by brand</h3>
+            <div className="row" style={{ marginBottom: 14 }}>
+              <h3 style={{ margin: 0 }}>This month by brand</h3><span className="spacer" />
+              <span className="legend"><span className="sw in" />Money in <span className="sw out" />Money out</span>
+            </div>
             {m.brands.length === 0 && <Empty>No entries this month yet.</Empty>}
-            <div className="grid" style={{ gap: 12 }}>
+            <div className="grid" style={{ gap: 16 }}>
               {m.brands.map((b) => (
                 <div key={b.brand_id}>
-                  <div className="row" style={{ marginBottom: 5 }}>
-                    <span>{b.brand_name}</span><span className="spacer" />
-                    <span className={`num ${b.net >= 0 ? 'in' : 'out'}`} style={{ fontWeight: 600 }}>{inr(b.net)}</span>
+                  <div className="row" style={{ marginBottom: 6 }}>
+                    <span className="brand-name"><span className="dot" style={{ background: b.brand_color || '#71717a' }} />{b.brand_name}</span>
+                    <span className="spacer" />
+                    <span className={`num ${b.net >= 0 ? 'in' : 'out'}`} style={{ fontWeight: 600 }}>{b.net >= 0 ? '+' : '−'}{inr(Math.abs(b.net))}</span>
                   </div>
-                  <div className="brand-bar"><div style={{ width: `${(Math.abs(b.net) / maxNet) * 100}%`, background: b.net >= 0 ? b.brand_color : 'var(--out)' }} /></div>
+                  <div className="brand-bar"><div style={{ width: `${(b.income / maxVal) * 100}%`, background: 'var(--in)' }} /></div>
+                  <div className="brand-bar thin"><div style={{ width: `${(b.expense / maxVal) * 100}%`, background: 'var(--out)' }} /></div>
+                  <div className="brand-sub">In {inr(b.income)} · Out {inr(b.expense)}</div>
                 </div>
               ))}
             </div>
@@ -67,16 +167,31 @@ export default function Dashboard() {
             </div>
             {data.recent.length === 0 ? <Empty>No entries yet.</Empty> : (
               <table className="t"><tbody>
-                {data.recent.map((e) => (
-                  <tr key={e.id}>
-                    <td><BrandTag code={e.brand_code} color={e.brand_color} /></td>
-                    <td><div>{e.party || e.category_name || '—'}</div><div className="muted small">{fmtDate(e.entry_date)}</div></td>
-                    <td className="num"><Money v={e.amount} type={e.type} /></td>
-                  </tr>
-                ))}
+                {data.recent.map((e) => {
+                  const primary = e.party || e.category_name || 'No description';
+                  const sub = [e.party && e.category_name, fmtDate(e.entry_date), e.account_name].filter(Boolean).join(' · ');
+                  return (
+                    <tr key={e.id}>
+                      <td style={{ width: 1 }}><BrandTag code={e.brand_code} color={e.brand_color} /></td>
+                      <td><div className="ellipsis">{primary}</div><div className="muted small ellipsis">{sub}</div></td>
+                      <td className="num">
+                        {e.type === 'transfer'
+                          ? <span className="muted" title="Moved between our own accounts">⇄ {inr(e.amount)}</span>
+                          : <Money v={e.amount} type={e.type} />}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody></table>
             )}
           </div>
+        </div>
+      )}
+
+      {m && data.accounts && (
+        <div className="grid g2" style={{ marginTop: 14 }}>
+          <TopAccounts accounts={data.accounts} />
+          {user.role === 'admin' && <Activity />}
         </div>
       )}
     </>

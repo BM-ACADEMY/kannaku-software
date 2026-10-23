@@ -10,6 +10,7 @@ const { z } = require('zod');
 const { parse } = require('../lib/http');
 
 const { todayIST: today } = require('../lib/books');
+const petty = require('../lib/petty');
 
 router.get('/pnl', requireRole('admin', 'accounts'), ah(async (req, res) => {
   const { from, to } = req.query;
@@ -41,7 +42,7 @@ router.get('/gst', requireRole('admin', 'accounts'), ah(async (req, res) => {
 }));
 
 // Dashboard — what everyone sees first
-router.get('/dashboard', ah(async (req, res) => {
+router.get('/dashboard', requireRole('admin', 'accounts', 'sales'), ah(async (req, res) => {
   const t = today(); const ym = t.slice(0, 7);
   const { from, to } = monthRange(ym);
   const [day, month, recv, pay, quotes, recent] = await Promise.all([
@@ -57,7 +58,7 @@ router.get('/dashboard', ah(async (req, res) => {
     query(`SELECT COUNT(*) AS n, COALESCE(SUM(total),0) AS amt FROM documents WHERE doc_type='quote' AND status IN ('draft','sent','accepted')`),
     query(`SELECT e.id,e.entry_date,e.type,e.amount,
         CASE WHEN e.type='transfer' THEN fa.name || ' → ' || ta.name ELSE e.party END AS party,
-        e.note,b.code AS brand_code,b.color AS brand_color,c.name AS category_name
+        b.code AS brand_code,b.color AS brand_color,c.name AS category_name,fa.name AS account_name
       FROM entries e JOIN brands b ON b.id=e.brand_id LEFT JOIN categories c ON c.id=e.category_id
       LEFT JOIN accounts fa ON fa.id=e.account_id LEFT JOIN accounts ta ON ta.id=e.to_account_id
       WHERE e.deleted_at IS NULL AND e.status='posted' ORDER BY e.created_at DESC LIMIT 8`),
@@ -73,6 +74,23 @@ router.get('/dashboard', ah(async (req, res) => {
     extra = { balances: bal.filter((a) => a.active), cash_total: bal.filter((a) => a.active).reduce((s, a) => s + Number(a.balance), 0),
       pending_count: pend.rows[0].n, unmatched_bank: bank.rows[0].n,
       forecast: fc ? { low: fc.low, runs_out_on: fc.runs_out_on, end_balance: fc.end_balance, expected_in: fc.expected_in, expected_out: fc.expected_out } : null };
+    // "Needs your action" counts — admin and accounts only (never sent to sales or investors)
+    const p = await petty.status().catch(() => null);
+    // Top accounts with the change over the last 7 days (admin and accounts only)
+    const weekAgo = new Date(Date.parse(`${t}T00:00:00Z`) - 7 * 864e5).toISOString().slice(0, 10);
+    const prevBal = await accountBalances(weekAgo).catch(() => []);
+    extra.accounts = extra.balances.map((a) => {
+      const was = prevBal.find((x) => x.id === a.id);
+      return { id: a.id, name: a.name, kind: a.kind, balance: Number(a.balance), change7: Math.round((Number(a.balance) - Number(was?.balance || 0)) * 100) / 100 };
+    });
+    extra.attention = {
+      pending_approval: p?.awaiting_approval?.count || 0,
+      cash_waiting: p?.collections?.yesterday_balance || 0,
+      cash_waiting_account: p?.collections?.name || null,
+      cash_low: !!p?.low,
+      cash_balance: p?.balance ?? null,
+      bills_missing: p?.bills_missing?.count || 0,
+    };
   }
   const showMoney = req.user.role !== 'sales';
   res.json({
