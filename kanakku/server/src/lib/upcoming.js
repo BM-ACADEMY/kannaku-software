@@ -63,6 +63,8 @@ async function upcoming({ from = todayIST(), to, includeOverdue = true, today = 
       d = nextAfter(d, r.frequency, r.day);
     }
   }
+  // Monthly money dates (rent, statutory, investor payouts, salaries)
+  items.push(...(await require('./obligations').scheduleItems({ from, to })));
   for (const i of items) i.days_left = daysBetween(today, i.date);
   return items.sort((a, b) => a.date.localeCompare(b.date) || b.amount - a.amount);
 }

@@ -23,7 +23,9 @@ router.put('/', requireRole('admin'), ah(async (req, res) => {
     if (v.at && !/^([01]\d|2[0-3]):[0-5]\d$/.test(v.at)) throw new HttpError(400, `Time for ${k} must be HH:MM`);
   }
   const cur = await ap.settings();
-  const next = { enabled: b.enabled, jobs: Object.fromEntries(Object.entries(cur.jobs).map(([k, v]) => [k, { ...v, ...(b.jobs[k] || {}) }])) };
+  const next = { enabled: true, jobs: Object.fromEntries(Object.entries(cur.jobs).map(([k, v]) => [k, { ...v, ...(b.jobs[k] || {}) }])) };
+  // Mandatory: the "to pay" alert to admins can never be switched off (autopilot itself stays on)
+  next.jobs.pay_reminders = { ...next.jobs.pay_reminders, on: true };
   await query(`INSERT INTO settings (key,value) VALUES ('autopilot',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, [JSON.stringify(next)]);
   await audit(req.user.id, 'update', 'settings', null, { key: 'autopilot', enabled: b.enabled });
   res.json(next);

@@ -187,7 +187,7 @@ const JOBS = {
     if (!pick.length) return { summary: all.length ? `${all.length} payment(s) coming, none needs a reminder today` : 'Nothing to pay soon' };
     const when = (d) => (d < 0 ? `overdue ${-d} day${d === -1 ? '' : 's'}` : d === 0 ? 'today' : d === 1 ? 'tomorrow' : `in ${d} days`);
     const total = pick.reduce((s, i) => s + i.amount, 0);
-    const text = `To pay — ₹${fmt(total)}: ` + pick.slice(0, 12).map((i) => `${i.title.replace(/^Pay( bill)? · /, '')} ₹${fmt(i.amount)} (${when(i.days_left)})`).join('; ')
+    const text = `To pay — ₹${fmt(total)}: ` + pick.slice(0, 12).map((i) => `${i.title.replace(/^Pay( bill)? · /, '')} ${i.amount ? `₹${fmt(i.amount)}` : 'amount to enter'} (${when(i.days_left)})`).join('; ')
       + (pick.length > 12 ? `; +${pick.length - 12} more` : '');
     const res = await notifyAdmins('To pay', text);
     return { summary: `${pick.length} payment(s), ₹${fmt(total)} — sent to ${res.filter((x) => x.whatsapp || x.email).length} of ${res.length} admins`,
